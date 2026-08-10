@@ -24,9 +24,13 @@ npm-debug.log*
 pnpm-debug.log*
 yarn-error.log*
 
-# --- Built frontend copied into the package ---
-server/app/static/*
-!server/app/static/.gitkeep
+# --- Built frontend, written into the package by `vite build` ---
+# Not tracked at all: the build wipes this directory (emptyOutDir), which
+# would leave a tracked placeholder permanently "deleted" in every deployment.
+server/app/static/
+
+# Written by install.sh so /api/version can report the commit without git.
+server/app/_build_info.py
 
 # --- PlatformIO / ESP-IDF ---
 .pio/

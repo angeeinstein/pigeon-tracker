@@ -259,7 +259,29 @@ fetch_code() {
             tar -C "${script_dir}" --exclude=.git --exclude=node_modules --exclude=.venv \
                 --exclude=venv -cf - . | tar -C "${APP_DIR}" -xf -
         else
-            git clone --quiet --depth 50 --branch "${BRANCH}" "${REPO_URL}" "${APP_DIR}"
+            # `git clone` refuses a non-empty destination, and ${APP_DIR}
+            # frequently is one: it holds the virtualenv, it survives a
+            # tarball install, and a clone that died half way leaves debris
+            # that would otherwise make every retry fail forever.
+            #
+            # So clone somewhere clean and lay the result over the top,
+            # keeping the virtualenv (re-creating it means re-downloading
+            # torch) and adopting the new .git so later updates take the fast
+            # path above.
+            local staging
+            staging="$(mktemp -d /tmp/turret-clone.XXXXXX)"
+            # shellcheck disable=SC2064
+            trap "rm -rf '${staging}'" RETURN
+            git clone --quiet --depth 50 --branch "${BRANCH}" "${REPO_URL}" "${staging}/repo"
+
+            mkdir -p "${APP_DIR}"
+            tar -C "${staging}/repo" --exclude=.git -cf - . | tar -C "${APP_DIR}" -xf -
+            rm -rf "${APP_DIR}/.git"
+            mv "${staging}/repo/.git" "${APP_DIR}/.git"
+            # The working tree was just written from this exact commit, but
+            # tar does not reproduce git's index; refresh it so `git status`
+            # and the next update start from a clean slate.
+            git -C "${APP_DIR}" reset --hard --quiet HEAD
         fi
         ok "source installed in ${APP_DIR}"
     fi
