@@ -15,8 +15,10 @@
 #   --repair             reinstall dependencies without changing the code
 #   --restart            restart the service and exit
 #   --status             show status and exit
+#   --logs               show recent service logs and exit
+#   --backup             create a data/configuration backup and exit
 #   --uninstall          remove the service and code (keeps data unless --purge)
-#   --purge              with --uninstall, also remove configuration and data
+#   --purge              with --uninstall, remove all turret-control-owned data
 #   --yes                never prompt (for automation)
 #   --branch <name>      git branch/tag to install (default: main)
 #   --repo <url>         source repository
@@ -44,6 +46,8 @@ SERVER_DIR="${APP_DIR}/server"
 SERVICE_NAME="turret-control"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 ENV_FILE="${CONFIG_DIR}/turret.env"
+LAUNCHER_FILE="/usr/local/bin/turret-update"
+UPDATE_COMMAND="/usr/local/bin/update"
 HTTP_PORT="${TURRET_PORT:-8080}"
 
 MODE=""
@@ -52,6 +56,9 @@ INSTALL_AI=1
 BUILD_FRONTEND=1
 USE_SYSTEM_GSTREAMER=0
 PURGE=0
+UPDATE_AVAILABLE=-1
+CURRENT_COMMIT="unknown"
+REMOTE_COMMIT="unknown"
 
 MIN_NODE_MAJOR=18
 NODESOURCE_VERSION=20
@@ -110,6 +117,8 @@ parse_args() {
             --repair)         MODE="repair" ;;
             --restart)        MODE="restart" ;;
             --status)         MODE="status" ;;
+            --logs)           MODE="logs" ;;
+            --backup)         MODE="backup" ;;
             --uninstall)      MODE="uninstall" ;;
             --purge)          PURGE=1 ;;
             --yes|-y)         ASSUME_YES=1 ;;
@@ -290,6 +299,47 @@ fetch_code() {
     local commit="unknown"
     commit="$(git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     printf 'GIT_COMMIT = "%s"\n' "${commit}" > "${SERVER_DIR}/app/_build_info.py"
+}
+
+install_launcher() {
+    step "Installing management command"
+    if [[ -e "${LAUNCHER_FILE}" || -L "${LAUNCHER_FILE}" ]]; then
+        if [[ ! -f "${LAUNCHER_FILE}" ]] ||
+           ! grep -q 'Managed by turret-control/install.sh' "${LAUNCHER_FILE}"; then
+            warn "${LAUNCHER_FILE} already belongs to another program; use the installer directly"
+            return
+        fi
+    fi
+    cat > "${LAUNCHER_FILE}" <<EOF
+#!/usr/bin/env bash
+# Managed by turret-control/install.sh. Removing the application removes this file.
+set -e
+if [[ \${EUID} -eq 0 ]]; then
+    exec bash "${APP_DIR}/install.sh" "\$@"
+fi
+exec sudo bash "${APP_DIR}/install.sh" "\$@"
+EOF
+    chmod 0755 "${LAUNCHER_FILE}"
+    ok "installed ${LAUNCHER_FILE}"
+
+    if [[ ! -e "${UPDATE_COMMAND}" && ! -L "${UPDATE_COMMAND}" ]]; then
+        ln -s "${LAUNCHER_FILE}" "${UPDATE_COMMAND}"
+        ok "type 'update' to open the turret-control manager"
+    elif [[ -L "${UPDATE_COMMAND}" && "$(readlink -f "${UPDATE_COMMAND}")" == "${LAUNCHER_FILE}" ]]; then
+        ok "the 'update' command is already configured"
+    else
+        warn "${UPDATE_COMMAND} already belongs to another program; use 'turret-update' instead"
+    fi
+}
+
+remove_launcher() {
+    if [[ -L "${UPDATE_COMMAND}" && "$(readlink -f "${UPDATE_COMMAND}")" == "${LAUNCHER_FILE}" ]]; then
+        rm -f -- "${UPDATE_COMMAND}"
+    fi
+    if [[ -f "${LAUNCHER_FILE}" ]] &&
+       grep -q 'Managed by turret-control/install.sh' "${LAUNCHER_FILE}"; then
+        rm -f -- "${LAUNCHER_FILE}"
+    fi
 }
 
 # --------------------------------------------------------------------------
@@ -578,6 +628,33 @@ show_status() {
         jq . 2>/dev/null || echo "health endpoint not reachable"
 }
 
+check_versions() {
+    step "Checking versions"
+    CURRENT_COMMIT="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+    REMOTE_COMMIT="$(timeout 10s git ls-remote "${REPO_URL}" "refs/heads/${BRANCH}" 2>/dev/null |
+        awk 'NR == 1 {print $1}' || true)"
+    REMOTE_COMMIT="${REMOTE_COMMIT:-unknown}"
+
+    if [[ "${CURRENT_COMMIT}" == "unknown" ]]; then
+        UPDATE_AVAILABLE=-1
+        warn "installed version could not be determined"
+    elif [[ "${REMOTE_COMMIT}" == "unknown" ]]; then
+        UPDATE_AVAILABLE=-1
+        warn "could not check GitHub; installed commit is ${CURRENT_COMMIT:0:7}"
+    elif [[ "${CURRENT_COMMIT}" == "${REMOTE_COMMIT}" ]]; then
+        UPDATE_AVAILABLE=0
+        ok "already current at ${CURRENT_COMMIT:0:7} (${BRANCH})"
+    else
+        UPDATE_AVAILABLE=1
+        info "update available: ${CURRENT_COMMIT:0:7} -> ${REMOTE_COMMIT:0:7} (${BRANCH})"
+    fi
+}
+
+show_logs() {
+    step "Recent service logs"
+    journalctl -u "${SERVICE_NAME}" -n 100 --no-pager
+}
+
 primary_address() {
     hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1"
 }
@@ -602,7 +679,8 @@ ${C_GREEN}${C_BOLD}turret-control is installed.${C_RESET}
 
   Logs            journalctl -u ${SERVICE_NAME} -f
   Restart         systemctl restart ${SERVICE_NAME}
-  Update          sudo bash ${APP_DIR}/install.sh --update
+  Manager         update
+  Direct update   turret-update --update
 
 ${C_BOLD}Next steps${C_RESET}
   1. Open the web interface and add your camera under Settings > Camera.
@@ -626,6 +704,7 @@ do_install() {
     create_user
     create_directories
     fetch_code
+    install_launcher
     setup_venv
     build_frontend
     write_config
@@ -643,6 +722,7 @@ do_update() {
     install_packages
     create_directories
     fetch_code
+    install_launcher
     setup_venv
     build_frontend
     write_config
@@ -660,6 +740,7 @@ do_repair() {
     install_packages
     create_user
     create_directories
+    install_launcher
     setup_venv
     build_frontend
     write_config
@@ -670,46 +751,87 @@ do_repair() {
     ok "repair complete"
 }
 
+safe_remove_tree() {
+    local target=$1
+    case "${target}" in
+        "${APP_DIR}"|"${DATA_DIR}"|"${CONFIG_DIR}"|"${BACKUP_DIR}") ;;
+        *) die "refusing to remove unexpected path: ${target}" ;;
+    esac
+    [[ "${target}" == /* && "${target}" != "/" ]] ||
+        die "refusing unsafe removal target: ${target}"
+    rm -rf -- "${target}"
+}
+
+confirm_full_purge() {
+    [[ ${ASSUME_YES} -eq 1 ]] && return 0
+    [[ -t 0 ]] || return 0
+    local answer
+    warn "this permanently deletes configuration, calibration, events, models, snapshots and backups"
+    read -r -p "Type PURGE to remove everything owned by turret-control: " answer || true
+    [[ "${answer}" == "PURGE" ]]
+}
+
 do_uninstall() {
     confirm "Remove the turret-control service and application?" || { info "cancelled"; exit 0; }
+    if [[ ${PURGE} -eq 1 ]]; then
+        confirm_full_purge || { info "full purge cancelled"; exit 0; }
+    fi
     step "Uninstalling"
     systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
-    rm -f "${SERVICE_FILE}"
+    rm -f -- "${SERVICE_FILE}"
     systemctl daemon-reload
-    rm -rf "${APP_DIR}"
+    remove_launcher
+    safe_remove_tree "${APP_DIR}"
     ok "service and code removed"
     if [[ ${PURGE} -eq 1 ]]; then
-        confirm "Also delete configuration, calibration and event history in ${DATA_DIR}?" || {
-            info "keeping ${DATA_DIR} and ${CONFIG_DIR}"
-            return
-        }
-        rm -rf "${DATA_DIR}" "${CONFIG_DIR}"
-        ok "configuration and data removed"
+        safe_remove_tree "${DATA_DIR}"
+        safe_remove_tree "${CONFIG_DIR}"
+        safe_remove_tree "${BACKUP_DIR}"
+        if id -u "${APP_USER}" >/dev/null 2>&1; then
+            userdel "${APP_USER}" 2>/dev/null || warn "could not remove service user ${APP_USER}"
+        fi
+        if getent group "${APP_GROUP}" >/dev/null 2>&1; then
+            groupdel "${APP_GROUP}" 2>/dev/null || warn "could not remove service group ${APP_GROUP}"
+        fi
+        ok "configuration, data, models, snapshots, backups and service account removed"
+        info "shared Debian/Node/Python packages were left installed for system safety"
     else
-        info "kept ${DATA_DIR} and ${CONFIG_DIR} (use --purge to remove them)"
+        info "kept ${DATA_DIR}, ${CONFIG_DIR} and ${BACKUP_DIR} (use --purge to remove them)"
     fi
 }
 
 interactive_menu() {
+    check_versions
+    local update_label="Update installation"
+    [[ ${UPDATE_AVAILABLE} -eq 0 ]] && update_label="Reinstall current version"
     cat <<EOF
 
-${C_BOLD}turret-control is already installed.${C_RESET}
+${C_BOLD}turret-control manager${C_RESET}
   Location: ${APP_DIR}   Service: $(systemctl is-active "${SERVICE_NAME}" 2>/dev/null || echo unknown)
+  Installed: ${CURRENT_COMMIT:0:7}   Latest: ${REMOTE_COMMIT:0:7}   Branch: ${BRANCH}
 
-  1) Update installation
-  2) Repair / reinstall dependencies
+  1) ${update_label}
+  2) Check service and application endpoints
   3) Restart service
-  4) Show service status
-  5) Cancel
+  4) Repair / reinstall dependencies
+  5) Show recent logs
+  6) Create a data/configuration backup now
+  7) Uninstall application (keep data and backups)
+  8) PURGE everything owned by turret-control
+  9) Cancel
 
 EOF
     local choice
     read -r -p "Choice [1]: " choice || true
     case "${choice:-1}" in
         1) MODE="update" ;;
-        2) MODE="repair" ;;
+        2) MODE="status" ;;
         3) MODE="restart" ;;
-        4) MODE="status" ;;
+        4) MODE="repair" ;;
+        5) MODE="logs" ;;
+        6) MODE="backup" ;;
+        7) MODE="uninstall" ;;
+        8) MODE="uninstall"; PURGE=1 ;;
         *) info "cancelled"; exit 0 ;;
     esac
 }
@@ -745,7 +867,10 @@ main() {
         repair)    is_installed || die "nothing to repair - run without flags to install"
                    do_repair ;;
         restart)   restart_service; wait_for_health; verify_http_endpoints ;;
-        status)    show_status ;;
+        status)    show_status; verify_http_endpoints ;;
+        logs)      show_logs ;;
+        backup)    is_installed || die "nothing to back up"
+                   backup_data ;;
         uninstall) do_uninstall ;;
         *)         die "unknown mode: ${MODE}" ;;
     esac

@@ -29,15 +29,33 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    credentials: 'same-origin',
-    headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      signal: controller?.signal ?? init?.signal,
+      credentials: 'same-origin',
+      headers: {
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    if (controller?.signal.aborted) {
+      throw new ApiError(
+        `request timed out after ${Math.round((timeoutMs ?? 0) / 1000)} seconds`,
+        408,
+      );
+    }
+    throw error;
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
@@ -55,8 +73,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-const post = <T>(path: string, body?: unknown) =>
-  request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+const post = <T>(path: string, body?: unknown, timeoutMs?: number) =>
+  request<T>(
+    path,
+    { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) },
+    timeoutMs,
+  );
 
 export const api = {
   health: () => request<Health>('/api/health'),
@@ -156,9 +178,11 @@ export const api = {
   discoverCameras: (timeout_s = 4) =>
     post<{ devices: OnvifDevice[]; note: string }>(
       `/api/cameras/discover?timeout_s=${timeout_s}`,
+      undefined,
+      (timeout_s + 5) * 1000,
     ),
   onvifProfiles: (body: { xaddr: string; username: string; password: string }) =>
-    post<OnvifProfileResult>('/api/cameras/onvif/profiles', body),
+    post<OnvifProfileResult>('/api/cameras/onvif/profiles', body, 22_000),
   onboardCamera: (body: {
     id: string;
     name: string;

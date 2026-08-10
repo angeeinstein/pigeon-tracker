@@ -766,12 +766,14 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [result, setResult] = useState<OnvifProfileResult | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [role, setRole] = useState<'overview' | 'turret' | 'aux'>('overview');
   const [busy, setBusy] = useState<'discover' | 'connect' | string | null>(null);
 
   const discover = async () => {
     setBusy('discover');
     setResult(null);
+    setConnectionError(null);
     try {
       const response = await api.discoverCameras();
       setDevices(response.devices);
@@ -783,7 +785,9 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
         response.devices.length ? 'good' : 'info',
       );
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'bad');
+      const message = error instanceof Error ? error.message : String(error);
+      setConnectionError(message);
+      notify(message, 'bad');
     } finally {
       setBusy(null);
     }
@@ -792,12 +796,15 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
   const connect = async () => {
     setBusy('connect');
     setResult(null);
+    setConnectionError(null);
     try {
       const response = await api.onvifProfiles({ xaddr, username, password });
       setResult(response);
       notify(`connected to ${response.device.manufacturer} ${response.device.model}`, 'good');
     } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), 'bad');
+      const message = error instanceof Error ? error.message : String(error);
+      setConnectionError(message);
+      notify(message, 'bad');
     } finally {
       setBusy(null);
     }
@@ -852,8 +859,9 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
                   : 'border-edge bg-panelalt hover:border-muted'
               }`}
               onClick={() => {
-                setXaddr(device.xaddr);
-                setResult(null);
+              setXaddr(device.xaddr);
+              setResult(null);
+              setConnectionError(null);
               }}
             >
               <span className="block font-medium">{device.name || device.host}</span>
@@ -873,9 +881,10 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
             onChange={(value) => {
               setXaddr(value);
               setResult(null);
+              setConnectionError(null);
             }}
             placeholder="http://192.168.1.217:2020/onvif/device_service"
-            hint="Manual entry works when multicast cannot cross from the server to the camera subnet."
+            hint="Manual entry works across subnets. Include the camera's ONVIF port; it is often not port 80 (for example :2020 or :8000)."
           />
         </div>
         <TextField
@@ -912,6 +921,12 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
           </button>
         </div>
       </div>
+
+      {connectionError && (
+        <div className="mt-3">
+          <Banner>{connectionError}</Banner>
+        </div>
+      )}
 
       {result && (
         <div className="mt-3 space-y-2 border-t border-edge pt-3">

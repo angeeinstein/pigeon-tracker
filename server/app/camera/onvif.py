@@ -7,6 +7,10 @@ import socket
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
+from app.logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 class OnvifError(RuntimeError):
     """A camera could not be discovered, authenticated, or queried."""
@@ -102,6 +106,14 @@ def fetch_onvif_profiles(
     """Authenticate with an ONVIF device and obtain its RTSP profiles."""
     host, port, use_https = validate_private_device_url(xaddr, {"http", "https"})
     try:
+        with socket.create_connection((host, port), timeout=min(timeout_s, 3)):
+            pass
+    except OSError as exc:
+        raise OnvifError(
+            f"could not reach the ONVIF service at {host}:{port}; check its address, "
+            "port and network route"
+        ) from exc
+    try:
         from onvif import CacheMode, ONVIFClient
 
         client = ONVIFClient(
@@ -146,9 +158,23 @@ def fetch_onvif_profiles(
     except OnvifError:
         raise
     except Exception as exc:
-        raise OnvifError(
-            "could not query camera; check the ONVIF address and camera account credentials"
-        ) from exc
+        log.warning(
+            "ONVIF profile query failed",
+            extra={"ctx": {"host": host, "port": port, "error_type": type(exc).__name__}},
+        )
+        reason = str(exc).lower()
+        if any(word in reason for word in ("401", "unauthorized", "not authorized", "auth")):
+            message = "camera rejected the ONVIF account username or password"
+        elif "timed out" in reason or "timeout" in reason:
+            message = (
+                f"ONVIF service at {host}:{port} timed out; check the port and camera settings"
+            )
+        else:
+            message = (
+                f"camera answered at {host}:{port}, but the ONVIF query failed; check that this "
+                "is the device-service port and that ONVIF is enabled for the camera account"
+            )
+        raise OnvifError(message) from exc
 
     if not profiles:
         raise OnvifError("camera exposed no usable RTSP profiles")

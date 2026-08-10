@@ -7,6 +7,7 @@ fresh install will at least come up and be controllable.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -143,6 +144,26 @@ class TestCameraOnboarding:
         assert "very-secret" not in response.text
         status = client.get("/api/cameras/credentials").json()["test-camera"]
         assert status == {"camera_id": "test-camera", "configured": True, "username": "viewer"}
+
+    def test_profile_query_has_a_hard_timeout(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("app.api.routes.ONVIF_PROFILE_TIMEOUT_S", 0.001)
+        monkeypatch.setattr(
+            "app.api.routes.fetch_onvif_profiles",
+            lambda *args: time.sleep(0.05),
+        )
+        response = client.post(
+            "/api/cameras/onvif/profiles",
+            json={
+                "xaddr": "http://192.168.1.20:2020/onvif/device_service",
+                "username": "viewer",
+                "password": "secret",
+            },
+        )
+        assert response.status_code == 504
+        assert "secret" not in response.text
+        assert "did not answer" in response.json()["detail"]
 
 
 class TestControlWithoutHardware:

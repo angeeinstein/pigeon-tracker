@@ -31,6 +31,7 @@ from app.turret.models import TurretError
 from app.version import version_info
 
 router = APIRouter(prefix="/api")
+ONVIF_PROFILE_TIMEOUT_S = 20.0
 
 
 def _turret_error(exc: TurretError) -> HTTPException:
@@ -714,9 +715,21 @@ async def camera_onvif_profiles(
     payload: OnvifProfilesRequest, runtime: RuntimeDep, _auth: AuthDep
 ) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(
-            fetch_onvif_profiles, payload.xaddr, payload.username, payload.password
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                fetch_onvif_profiles, payload.xaddr, payload.username, payload.password
+            ),
+            timeout=ONVIF_PROFILE_TIMEOUT_S,
         )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"camera did not answer within {ONVIF_PROFILE_TIMEOUT_S:g} seconds; "
+                "check the ONVIF address, "
+                "port and network route"
+            ),
+        ) from exc
     except OnvifError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

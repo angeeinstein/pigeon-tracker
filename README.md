@@ -53,20 +53,30 @@ little headroom — 2 GB is a more comfortable container size.
 curl -fsSL https://raw.githubusercontent.com/angeeinstein/pigeon-tracker/main/install.sh | sudo bash
 ```
 
-The same command later updates an existing installation. Run it interactively
-for a menu (update / repair / restart / status), or use flags:
+The same command later updates an existing installation. After the first run,
+simply type `update` to open the management menu. It checks the installed and
+GitHub versions before offering update, endpoint verification, restart, repair,
+logs, an immediate backup, uninstall-with-data-kept, and a separately confirmed
+full purge. If another program already owns the generic `update` command, use
+`turret-update` instead. Flags remain available for automation:
 
 ```bash
 sudo bash install.sh --update --yes
 sudo bash install.sh --branch dev --no-ai      # skip torch: much smaller
 sudo bash install.sh --status
 sudo bash install.sh --repair                  # rebuild venv + UI, keep data
+turret-update --backup
+turret-update --uninstall                      # keep data/config/backups
+turret-update --uninstall --purge              # delete all project-owned state
 ```
 
 What it does: installs apt packages, creates the `turret` system user, clones
 the repository to `/opt/turret-control`, builds a virtualenv and the frontend,
 writes `/etc/turret-control/turret.env` (generating a controller token),
 installs and starts the systemd unit, and verifies `/api/health`.
+The purge option removes the service, code, configuration, database, models,
+snapshots, backups, launchers and service account. Shared OS packages and the
+system-wide journal remain untouched so unrelated applications are not broken.
 
 Existing configuration, calibration, zones and events are **never** overwritten
 by an update; they are backed up to `/var/backups/turret-control` first, and a
@@ -140,7 +150,7 @@ can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
 a hard burst limit — enough to exercise every state the server can enter.
 
 ```bash
-pytest                                   # 175 tests, ~1 s
+pytest                                   # 177 tests, ~1 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current

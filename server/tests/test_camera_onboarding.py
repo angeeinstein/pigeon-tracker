@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from app.camera.credentials import CameraCredentialStore
-from app.camera.onvif import OnvifError, _clean_stream_uri, validate_private_device_url
+from app.camera.onvif import (
+    OnvifError,
+    _clean_stream_uri,
+    fetch_onvif_profiles,
+    validate_private_device_url,
+)
 from app.camera.rtsp import inject_credentials, redact_url
 
 
@@ -65,3 +70,15 @@ def test_device_url_rejects_embedded_credentials() -> None:
         validate_private_device_url(
             "http://admin:secret@192.168.1.20/onvif/device_service", {"http", "https"}
         )
+
+
+def test_profile_query_reports_unreachable_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    private = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 2020))]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: private)
+
+    def refuse_connection(*args: object, **kwargs: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(socket, "create_connection", refuse_connection)
+    with pytest.raises(OnvifError, match=r"192\.168\.1\.20:2020"):
+        fetch_onvif_profiles("http://192.168.1.20:2020/onvif/device_service", "user", "pass")
