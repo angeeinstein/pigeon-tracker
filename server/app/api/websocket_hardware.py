@@ -49,6 +49,7 @@ async def hardware_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     adapter = _ControllerAdapter(websocket)
     attached = False
+    post_connect: asyncio.Task[None] | None = None
 
     try:
         # --- handshake ---------------------------------------------------
@@ -116,7 +117,15 @@ async def hardware_socket(websocket: WebSocket) -> None:
             await adapter.close(proto.CLOSE_VERSION_MISMATCH, "protocol version mismatch")
             return
 
-        await runtime.on_controller_connected()
+        # Post-connect work (pushing configuration, disarming, optional auto
+        # homing) sends commands and waits for their acknowledgements. Those
+        # acknowledgements can only arrive through the read loop below, so this
+        # must NOT be awaited here - doing so deadlocks every command until it
+        # times out, and makes the link useless for the first few seconds of
+        # every connection.
+        post_connect = asyncio.create_task(
+            runtime.on_controller_connected(), name="controller-post-connect"
+        )
 
         # --- message loop -------------------------------------------------
         while True:
@@ -138,6 +147,8 @@ async def hardware_socket(websocket: WebSocket) -> None:
     except Exception:
         log.exception("controller socket failed")
     finally:
+        if post_connect is not None and not post_connect.done():
+            post_connect.cancel()
         if attached:
             await runtime.turret.detach()
             await runtime.on_controller_disconnected()

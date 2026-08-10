@@ -182,6 +182,64 @@ class TestEventsAndPreview:
         assert response.content[:2] == b"\xff\xd8"  # JPEG SOI
 
 
+class TestControllerHandshake:
+    """A controller connecting must be able to complete a full exchange.
+
+    This is a regression test for a deadlock: the route used to *await* the
+    post-connect work (config push, disarm) before starting its read loop, so
+    the acknowledgements it was waiting for could never be read. Every
+    connection burned two command timeouts and the config push always failed —
+    while everything still *looked* connected.
+    """
+
+    def test_config_push_is_acknowledged_and_no_commands_fail(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/hardware") as ws:
+            ws.send_json(
+                {
+                    "v": 1,
+                    "type": "hello",
+                    "controller_id": "turret-1",
+                    "firmware_version": "0.0.0-test",
+                    "protocol_version": 1,
+                    "capabilities": ["pan", "tilt", "valve"],
+                }
+            )
+            assert ws.receive_json()["accepted"] is True
+
+            # Answer whatever the server asks for, and record what that was.
+            seen: list[str] = []
+            for _ in range(6):
+                message = ws.receive_json()
+                seen.append(message["type"])
+                if message.get("id") is not None and message["type"] != "ping":
+                    ws.send_json({"v": 1, "type": "ack", "id": message["id"], "ok": True})
+                if "set_config" in seen and "arm_output" in seen:
+                    break
+
+            assert "set_config" in seen, f"no configuration push; saw {seen}"
+            assert "arm_output" in seen, f"output was never disarmed; saw {seen}"
+
+            health = client.get("/api/health").json()
+            assert health["checks"]["controller"] is True
+            assert health["controller"]["commands_failed"] == 0, (
+                "commands timed out even though the controller answered them"
+            )
+
+    def test_wrong_protocol_version_is_refused(self, client: TestClient) -> None:
+        with client.websocket_connect("/ws/hardware") as ws:
+            ws.send_json({"v": 1, "type": "hello", "protocol_version": 99})
+            reply = ws.receive_json()
+            assert reply["accepted"] is False
+            assert reply["reason"] == "protocol_version_mismatch"
+
+    def test_first_frame_must_be_hello(self, client: TestClient) -> None:
+        from starlette.websockets import WebSocketDisconnect as WSDisconnect
+
+        with pytest.raises(WSDisconnect), client.websocket_connect("/ws/hardware") as ws:
+            ws.send_json({"v": 1, "type": "status", "pan_deg": 0.0})
+            ws.receive_json()
+
+
 class TestFrontendFallback:
     def test_unknown_api_route_is_404(self, client: TestClient) -> None:
         assert client.get("/api/does-not-exist").status_code == 404

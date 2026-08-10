@@ -103,10 +103,21 @@ class YoloDetector(Detector):
             "YOLO_CONFIG_DIR": self.models_dir / ".ultralytics",
             "MPLCONFIGDIR": self.models_dir / ".matplotlib",
         }
-        for name, path in defaults.items():
-            if not os.environ.get(name):
+        for name, fallback in defaults.items():
+            # The directory must exist whether the value came from the
+            # environment (systemd sets both) or from the fallback: ultralytics
+            # tests writability at import time and silently drops to /tmp if
+            # the directory is missing, losing its settings on every restart.
+            path = Path(os.environ.get(name) or fallback)
+            try:
                 path.mkdir(parents=True, exist_ok=True)
-                os.environ[name] = str(path)
+            except OSError as exc:  # pragma: no cover - depends on deployment
+                log.warning(
+                    "cache directory is not creatable",
+                    extra={"ctx": {"var": name, "path": str(path), "error": str(exc)}},
+                )
+                continue
+            os.environ[name] = str(path)
 
     def load(self) -> None:
         self._prepare_writable_dirs()

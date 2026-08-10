@@ -65,6 +65,7 @@ export default function Calibration() {
           </Banner>
         )}
 
+        <p className="card-title mb-0">Step 1 &mdash; click the spot in the image</p>
         <VideoView
           telemetry={telemetry}
           showTracks={false}

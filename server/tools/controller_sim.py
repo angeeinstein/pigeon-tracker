@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import websockets
 
+from app.turret.protocol import CLOSE_REPLACED
 from app.version import PROTOCOL_VERSION
 
 log = logging.getLogger("controller-sim")
@@ -225,6 +226,21 @@ class Simulator:
             try:
                 await self._session()
                 backoff = 1.0
+            except websockets.ConnectionClosed as exc:
+                if exc.rcvd is not None and exc.rcvd.code == CLOSE_REPLACED:
+                    # Another controller claimed this id. Reconnecting would
+                    # steal it straight back and the two would thrash forever,
+                    # resetting the turret state on every takeover.
+                    log.error(
+                        "another controller took over this id - exiting. "
+                        "Only one controller may be connected at a time."
+                    )
+                    return
+                log.warning("link lost (%s); reconnecting in %.0fs", exc, backoff)
+                self.controller.close_valve("link lost")
+                self.controller.armed = False
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 15.0)
             except (OSError, websockets.WebSocketException) as exc:
                 log.warning("link lost (%s); reconnecting in %.0fs", exc, backoff)
                 # Failsafe: the link is gone, so nothing may keep running.

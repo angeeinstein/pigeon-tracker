@@ -72,8 +72,11 @@ export default function Dashboard() {
         <VideoView telemetry={telemetry} onPick={onPick} />
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* This is the automatic state machine's state, not the arm state -
+              without the label "DISARMED" here next to an ARMED badge in the
+              header reads as a contradiction. */}
           <Pill tone={STATE_TONE[telemetry?.system_state ?? 'DISARMED'] ?? 'idle'}>
-            {telemetry?.system_state ?? '—'}
+            auto: {telemetry?.system_state ?? '—'}
           </Pill>
           {telemetry?.state_reason && (
             <span className="text-xs text-muted">{telemetry.state_reason}</span>
@@ -92,7 +95,15 @@ export default function Dashboard() {
             <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-3">
               <button
                 className={`btn ${telemetry?.armed ? 'btn-danger' : 'btn-good'}`}
-                disabled={!connected}
+                /* Disarming must always be possible; arming needs a homed turret. */
+                disabled={!connected || (!telemetry?.armed && !telemetry?.homed)}
+                title={
+                  !connected
+                    ? 'Controller not connected'
+                    : !telemetry?.armed && !telemetry?.homed
+                      ? 'Home the turret before arming'
+                      : undefined
+                }
                 onClick={() =>
                   attempt(
                     () => api.arm(!telemetry?.armed),

@@ -411,8 +411,11 @@ class Runtime:
 
     def _hud_lines(self) -> list[str]:
         turret = self.turret.state
+        # Two different facts share the word "disarmed": whether the *system*
+        # is armed, and which state the *automatic* machine is in. Label them,
+        # and put the safety-relevant one first.
         return [
-            f"{self.state_machine.state.value}  {'ARMED' if self.armed else 'DISARMED'}",
+            f"{'ARMED' if self.armed else 'SAFE'}   AUTO {self.state_machine.state.value}",
             f"pan {turret.pan_deg:7.2f}  tilt {turret.tilt_deg:7.2f}"
             f"{'  MOVING' if turret.moving else ''}",
         ]
