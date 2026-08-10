@@ -150,5 +150,6 @@ async def hardware_socket(websocket: WebSocket) -> None:
         if post_connect is not None and not post_connect.done():
             post_connect.cancel()
         if attached:
-            await runtime.turret.detach()
-            await runtime.on_controller_disconnected()
+            detached = await runtime.turret.detach(adapter)
+            if detached:
+                await runtime.on_controller_disconnected()

@@ -180,10 +180,19 @@ class TurretManager:
         )
         return True
 
-    async def detach(self) -> None:
-        """Called when the controller socket closes for any reason."""
+    async def detach(self, connection: ControllerConnection | None = None) -> bool:
+        """Detach the socket that closed, without tearing down a replacement.
+
+        A reconnect closes the previous WebSocket before installing the new
+        one.  The old route's ``finally`` block can run a moment later; it must
+        not clear the newer connection and cancel its ping loop.
+        """
+        if connection is not None and self._connection is not connection:
+            log.debug("ignoring detach from replaced controller connection")
+            return False
         await self._teardown()
         log.info("controller disconnected")
+        return True
 
     async def _teardown(self) -> None:
         self._connection = None
