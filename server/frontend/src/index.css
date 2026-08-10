@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-[#0f1115] text-ink antialiased;
+  /* Keep the layout clear of phone notches when used one-handed outdoors. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-edge bg-panel p-4 shadow-lg shadow-black/20;
+  }
+
+  .card-title {
+    @apply mb-3 text-xs font-semibold uppercase tracking-widest text-muted;
+  }
+
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-lg border
+      border-edge bg-panelalt px-3 py-2 text-sm font-medium text-ink transition
+      hover:border-accent/60 hover:bg-[#232a36] active:scale-[0.98]
+      disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-edge
+      disabled:hover:bg-panelalt;
+  }
+
+  .btn-primary {
+    @apply border-accent/50 bg-accent/20 text-[#cfe0ff] hover:bg-accent/30;
+  }
+
+  .btn-danger {
+    @apply border-bad/50 bg-bad/20 text-[#ffd4dc] hover:bg-bad/30;
+  }
+
+  .btn-good {
+    @apply border-good/50 bg-good/15 text-[#c9f7e3] hover:bg-good/25;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-edge bg-[#11151d] px-3 py-2 text-sm text-ink
+      outline-none transition focus:border-accent/70;
+  }
+
+  .label {
+    @apply mb-1 block text-xs font-medium text-muted;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium;
+  }
+
+  .tabular {
+    @apply font-mono tabular-nums;
+  }
+}

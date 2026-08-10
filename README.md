@@ -1,0 +1,198 @@
+# pigeon-tracker — networked 2-axis ball turret
+
+A camera-guided pan/tilt turret with a Linux control server and ESP-IDF
+firmware. Its first job is keeping pigeons off a balcony with a water nozzle;
+the architecture is deliberately generic, so with the water function switched
+off it is a perfectly ordinary camera ball turret with click-to-aim, presets and
+a joystick.
+
+**The server thinks, the controller moves.** No step pulses cross the network:
+the server sends angles and intents, and the ESP32 owns trajectory generation,
+limits, homing and every safety timer that has to survive a server crash.
+
+```
+RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► targeting state
+                     │                                            machine
+                     └─► MJPEG / WebSocket preview ─► browser         │
+                                                                      ▼
+                                          WebSocket ─────────────► ESP32
+                                                        steppers · endstops
+                                                        · valve · watchdog
+```
+
+---
+
+## Status
+
+| Part                                                    | State                                       |
+| ------------------------------------------------------- | ------------------------------------------- |
+| Server (FastAPI, vision, targeting, API, WebSockets)     | Working; 163 tests pass                     |
+| Web UI (React + TypeScript + Vite + Tailwind)            | Written; **not yet built/run** (no Node here) |
+| ESP32 firmware (ESP-IDF/PlatformIO)                      | Written; **not yet compiled or flashed**    |
+| Controller simulator                                     | Working; used for the end-to-end run below  |
+| Installer / systemd unit                                 | Written; syntax-checked, **not yet run on a real LXC** |
+
+The full chain has been exercised against the simulator: homing → arm → manual
+spray (with the interval guard refusing the second one) → calibration →
+click-to-aim → automatic engagement through `DETECTED → TRACKING → AIMING →
+VERIFY_TARGET → SPRAY → VERIFY_RESULT` → disarm.
+
+---
+
+## Install (Proxmox LXC, Debian/Ubuntu)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/angeeinstein/pigeon-tracker/main/install.sh | sudo bash
+```
+
+The same command later updates an existing installation. Run it interactively
+for a menu (update / repair / restart / status), or use flags:
+
+```bash
+sudo bash install.sh --update --yes
+sudo bash install.sh --branch dev --no-ai      # skip torch: much smaller
+sudo bash install.sh --status
+sudo bash install.sh --repair                  # rebuild venv + UI, keep data
+```
+
+What it does: installs apt packages, creates the `turret` system user, clones
+the repository to `/opt/turret-control`, builds a virtualenv and the frontend,
+writes `/etc/turret-control/turret.env` (generating a controller token),
+installs and starts the systemd unit, and verifies `/api/health`.
+
+Existing configuration, calibration, zones and events are **never** overwritten
+by an update; they are backed up to `/var/backups/turret-control` first, and a
+failed update rolls the code back to the previous commit.
+
+| Path                        | Contents                                  |
+| --------------------------- | ----------------------------------------- |
+| `/opt/turret-control`       | code and virtualenv (root-owned)          |
+| `/etc/turret-control`       | `turret.env` — secrets, 0640 root:turret  |
+| `/var/lib/turret-control`   | database, models, snapshots               |
+| `/var/backups/turret-control` | pre-update backups (last 5)             |
+
+```bash
+journalctl -u turret-control -f
+systemctl restart turret-control
+```
+
+---
+
+## First run
+
+1. Open `http://<lxc-ip>:8080/`.
+2. **Settings → Camera**: add the RTSP URL. Put the password in
+   `/etc/turret-control/turret.env` and reference it as `${CAM_PASSWORD}` in
+   the URL, so it never lands in the database.
+3. **Flash the ESP32** (`firmware/README.md`) with the controller token the
+   installer printed. It connects on its own and appears on the dashboard.
+4. **Home** the turret, then **Calibration**: click a spot in the image, jog
+   the nozzle onto that spot in reality, save. Repeat — a dozen points spread
+   over the balcony is plenty. Tag them by surface (railing / planter / floor)
+   where the geometry differs.
+5. **Zones**: draw an *active* zone where engagement is allowed and *no-spray*
+   zones anywhere water must not go (the neighbour's window, the doorway).
+6. Only then: enable water output, arm, and turn on automatic targeting.
+
+A fresh install is disarmed with water output disabled. It stays that way until
+you deliberately change it.
+
+---
+
+## Development without hardware
+
+```bash
+cd server
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements/dev.txt
+
+# Backend with a synthetic camera and a model-free detector:
+TURRET_DATA_DIR=./data \
+TURRET_FORCE_SIMULATED_CAMERA=true \
+TURRET_FORCE_MOCK_DETECTOR=true \
+python -m uvicorn app.main:app --reload --port 8080
+
+# In a second terminal: a controller that speaks the real protocol.
+python tools/controller_sim.py --url ws://127.0.0.1:8080/ws/hardware
+
+# In a third: the UI dev server (proxies /api and /ws to the backend).
+cd frontend && npm install && npm run dev
+```
+
+The simulator models acceleration-limited motion, homing that takes time (and
+can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
+a hard burst limit — enough to exercise every state the server can enter.
+
+```bash
+pytest                                   # 163 tests, ~1 s
+ruff check app tools tests && ruff format --check app tools tests
+python tools/gen_protocol_header.py --check   # firmware header is current
+```
+
+---
+
+## How it fits together
+
+| Directory                | Purpose                                                    |
+| ------------------------ | ---------------------------------------------------------- |
+| `server/app/camera/`     | RTSP ingest, latest-frame buffer, simulated source          |
+| `server/app/vision/`     | detector abstraction, YOLO backend, ByteTrack, overlays     |
+| `server/app/targeting/`  | calibration mapping, zones, target selection, state machine |
+| `server/app/turret/`     | protocol models, controller link                            |
+| `server/app/api/`        | REST, browser WebSocket, controller WebSocket               |
+| `server/app/services/`   | settings store, event log, telemetry, runtime wiring        |
+| `server/frontend/`       | React + TypeScript web UI                                   |
+| `server/tools/`          | controller simulator, protocol header generator             |
+| `firmware/`              | ESP-IDF firmware (PlatformIO)                               |
+| `docs/`                  | protocol, architecture, hardware notes                      |
+
+Further reading: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/PROTOCOL.md](docs/PROTOCOL.md), [docs/HARDWARE.md](docs/HARDWARE.md),
+[firmware/README.md](firmware/README.md).
+
+### Design decisions worth knowing
+
+**Newest frame wins.** `LatestFrameBuffer` holds exactly one frame; a slow
+detector skips frames instead of building a backlog. Each consumer (detector,
+preview, snapshots) pulls at its own rate.
+
+**One process, one worker.** The server owns live hardware state, so gunicorn
+runs a single uvicorn worker. Two workers would mean two controller links, two
+copies of the model and two state machines fighting over one turret.
+
+**Calibration by measurement, not by trigonometry.** The camera and the turret
+are not co-located, and a balcony is not one plane. Rather than model the
+geometry, the system interpolates between measured pixel↔angle pairs, per
+surface, and tells you when a click falls outside the calibrated region instead
+of inventing an answer.
+
+**Two independent safety layers.** The firmware clamps every burst with a
+hardware one-shot timer, closes the valve on link loss, watchdog expiry, e-stop
+or reset, and refuses absolute motion until homed. The server separately
+enforces cooldowns, retry limits and a cumulative duty budget. Neither trusts
+the other. See [docs/PROTOCOL.md §7](docs/PROTOCOL.md).
+
+**One protocol definition.** `server/app/turret/protocol.py` is the source of
+truth; `firmware/include/protocol_generated.h` is generated from it and a test
+fails if it drifts.
+
+---
+
+## Security
+
+Designed for a trusted LAN, but not carelessly:
+
+* No secrets in git. Credentials live in `/etc/turret-control/turret.env`
+  (0640) and `firmware/include/secrets.h` (git-ignored).
+* Optional web login (`TURRET_AUTH_ENABLED`), signed session cookie.
+* Optional pre-shared controller token, compared in constant time; a controller
+  with the wrong protocol version is refused rather than commanded blindly.
+* Every REST body and every WebSocket frame is schema-validated; frames are
+  size-capped; snapshot paths are confined to their directory.
+* Do not expose this to the internet. If you need remote access, use a VPN.
+
+---
+
+## Licence
+
+No licence is granted. All rights reserved by the repository owner.

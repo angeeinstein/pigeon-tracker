@@ -1,0 +1,13 @@
+# Optional AI stack. The server runs without these: the detector falls back to
+# the mock/disabled implementation and reports its state in /api/health.
+#
+# CPU-only install (default):
+#   pip install -r requirements/ai.txt --extra-index-url https://download.pytorch.org/whl/cpu
+# CUDA install (only if a GPU is exposed to the container):
+#   pip install -r requirements/ai.txt
+-r base.txt
+ultralytics>=8.1,<9.0
+
+# scipy is optional: it provides optimal (Hungarian) assignment for the
+# tracker. Without it a greedy matcher is used automatically.
+scipy>=1.10

@@ -1,0 +1,51 @@
+[Unit]
+Description=Turret control server (pigeon deterrent / camera ball turret)
+Documentation=https://github.com/angeeinstein/pigeon-tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=turret
+Group=turret
+WorkingDirectory=/opt/turret-control/server
+EnvironmentFile=/etc/turret-control/turret.env
+
+# One worker, deliberately: this process owns the controller WebSocket, the
+# camera decoders and the loaded model. See server/gunicorn.conf.py.
+ExecStart=/opt/turret-control/venv/bin/gunicorn \
+    --config /opt/turret-control/server/gunicorn.conf.py \
+    app.main:app
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Give the app time to close the valve and stop motion before it is killed.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+# Do not give up after repeated crashes: an unattended turret should keep
+# trying to come back rather than sit dead until someone notices.
+StartLimitIntervalSec=0
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turret-control
+
+# --- hardening -----------------------------------------------------------
+# The service needs nothing outside its own data directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/turret-control
+# Loosen only if a future feature needs it (e.g. USB hardware access).
+DeviceAllow=
+
+[Install]
+WantedBy=multi-user.target

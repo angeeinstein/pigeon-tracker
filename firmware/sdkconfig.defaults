@@ -1,0 +1,26 @@
+# Defaults applied on a fresh build. Adjust with `pio run -t menuconfig`.
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+CONFIG_FREERTOS_HZ=1000
+
+# The task watchdog is a load-bearing safety device here: if the motion or
+# safety task stops feeding it, the chip resets and every output (valve
+# included) returns to its inactive level.
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# Brown-out detector: a solenoid inrush that dips the rail must reset the
+# chip cleanly rather than corrupt state.
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+
+# Keep interrupt latency predictable for step generation.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
+
+CONFIG_LWIP_SO_RCVBUF=y
+CONFIG_LWIP_TCP_KEEPALIVE=y
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

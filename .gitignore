@@ -1,0 +1,66 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# --- Node / frontend ---
+node_modules/
+.vite/
+frontend/dist/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# --- Built frontend copied into the package ---
+server/app/static/*
+!server/app/static/.gitkeep
+
+# --- PlatformIO / ESP-IDF ---
+.pio/
+.pioenvs/
+.piolibdeps/
+firmware/sdkconfig
+firmware/sdkconfig.*
+!firmware/sdkconfig.defaults
+firmware/build/
+firmware/managed_components/
+firmware/dependencies.lock
+
+# --- Secrets & local state (NEVER commit) ---
+*.env
+.env
+.env.*
+!.env.example
+turret.env
+firmware/include/secrets.h
+server/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+models/*.pt
+models/*.onnx
+models/*.engine
+snapshots/
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
