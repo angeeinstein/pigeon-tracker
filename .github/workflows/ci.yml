@@ -31,7 +31,12 @@ jobs:
       - run: python -m pytest -q
       - run: python -m ruff check app tools tests
       - run: python -m ruff format --check app tools tests
-      - run: python -m mypy app
+      # The package supports Python 3.10, so type-check against that declared
+      # target once. Running mypy under 3.12 installs newer dependency stubs
+      # that intentionally use 3.12-only syntax and conflicts with the 3.10
+      # target, while adding no coverage beyond the 3.12 runtime test job.
+      - if: matrix.python-version == '3.10'
+        run: python -m mypy app
       - run: python tools/gen_protocol_header.py --check
 
   frontend:

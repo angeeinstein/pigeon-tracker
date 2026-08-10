@@ -137,7 +137,7 @@ can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
 a hard burst limit — enough to exercise every state the server can enter.
 
 ```bash
-pytest                                   # 174 tests, ~1 s
+pytest                                   # 175 tests, ~1 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current
