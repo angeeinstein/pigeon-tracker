@@ -26,7 +26,7 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 | Part                                                 | State                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 166 tests pass; running on a real LXC          |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 179 tests pass; running on a real LXC          |
 | Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
 | YOLO detection                                        | Model loads and runs (73 ms/frame on 2 vCPU, CPU-only)  |
@@ -150,7 +150,7 @@ can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
 a hard burst limit — enough to exercise every state the server can enter.
 
 ```bash
-pytest                                   # 177 tests, ~1 s
+pytest                                   # 179 tests, ~1 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current

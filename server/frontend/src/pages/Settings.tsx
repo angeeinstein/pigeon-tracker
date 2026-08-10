@@ -1,4 +1,13 @@
-import { useEffect, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ComponentProps,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { api } from '../api/client';
 import type {
   CameraConfig,
@@ -7,7 +16,16 @@ import type {
   OnvifProfileResult,
   Settings as SettingsType,
 } from '../api/types';
-import { Banner, Card, NumberField, SelectField, Spinner, TextField, Toggle } from '../components/ui';
+import {
+  Banner,
+  Card,
+  NumberField as BaseNumberField,
+  SelectField as BaseSelectField,
+  Spinner,
+  TextField as BaseTextField,
+  Toggle as BaseToggle,
+  type SettingStatus,
+} from '../components/ui';
 import { useAsync } from '../hooks/useAsync';
 import { useToast } from '../state';
 
@@ -25,12 +43,248 @@ const TABS: { id: SectionName; label: string }[] = [
   { id: 'system', label: 'Retention' },
 ];
 
-export default function Settings() {
-  const settings = useAsync(() => api.settings(), []);
-  const [tab, setTab] = useState<SectionName>('cameras');
+const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
+  cameras: {
+    'Primary camera (detection & calibration)': 'primary_id',
+    Id: 'id', Name: 'name', 'RTSP URL': 'url', Role: 'role', Backend: 'backend',
+    Transport: 'transport', 'Latency buffer': 'latency_ms', 'Downscale width': 'target_width',
+    'Stall timeout': 'stall_timeout_s', Enabled: 'enabled',
+  },
+  detector: {
+    'Detection enabled': 'enabled', Backend: 'backend', Model: 'model_path', Device: 'device',
+    'Confidence threshold': 'confidence', 'NMS IoU': 'iou', 'Inference rate': 'fps',
+    'Input size': 'input_size', Classes: 'classes', 'Half precision (CUDA only)': 'half',
+  },
+  tracker: {
+    'Tracking enabled': 'enabled', 'Track threshold': 'track_thresh', 'Low threshold': 'low_thresh',
+    'Match threshold (IoU distance)': 'match_thresh', 'Track buffer': 'track_buffer',
+    'Minimum hits to confirm': 'min_hits',
+  },
+  motion: {
+    'Pan minimum': 'pan_min_deg', 'Pan maximum': 'pan_max_deg', 'Tilt minimum': 'tilt_min_deg',
+    'Tilt maximum': 'tilt_max_deg', 'Maximum speed': 'max_speed_deg_s', Acceleration: 'accel_deg_s2',
+    'Manual/jog speed': 'manual_speed_deg_s', 'Jog timeout': 'jog_ttl_ms',
+    'Aim tolerance': 'aim_tolerance_deg', 'Park pan': 'park_pan_deg', 'Park tilt': 'park_tilt_deg',
+    'Home automatically when the controller connects': 'auto_home_on_connect',
+  },
+  controller: {
+    'Controller id': 'controller_id', 'Status timeout': 'status_timeout_s',
+    'Command timeout': 'command_timeout_s', 'Homing timeout': 'home_timeout_s',
+    'Ping interval': 'ping_interval_s', 'Push configuration on connect': 'push_config_on_connect',
+    'Motor steps per revolution': 'hardware.steps_per_rev', 'Pan microsteps': 'hardware.pan_microsteps',
+    'Tilt microsteps': 'hardware.tilt_microsteps', 'Pan gear ratio': 'hardware.pan_gear_ratio',
+    'Tilt gear ratio': 'hardware.tilt_gear_ratio', 'Homing speed': 'hardware.homing_speed_deg_s',
+    'Homing back-off': 'hardware.homing_backoff_deg', 'Pan home offset': 'hardware.pan_home_offset_deg',
+    'Tilt home offset': 'hardware.tilt_home_offset_deg',
+    'Pan homes toward maximum endstop': 'hardware.pan_home_dir',
+    'Tilt homes toward maximum endstop': 'hardware.tilt_home_dir',
+    'Invert pan direction': 'hardware.pan_invert', 'Invert tilt direction': 'hardware.tilt_invert',
+    'Endstops active low': 'hardware.endstop_active_low',
+    'Allow motion before homing': 'hardware.allow_unhomed_motion',
+  },
+  spray: {
+    'Water output enabled': 'enabled', 'Default duration': 'default_duration_ms',
+    'Maximum single burst': 'max_duration_ms', 'Minimum interval': 'min_interval_s',
+    'Duty budget': 'duty_budget_ms', 'Duty window': 'duty_window_s',
+  },
+  targeting: {
+    'Automatic targeting': 'auto_enabled', 'Target classes': 'target_classes',
+    'Minimum confidence': 'min_confidence', 'Minimum track age': 'min_track_duration_s',
+    'Selection stability': 'detect_stability_s', 'Selection policy': 'selection',
+    'Aim point (horizontal)': 'aim_x_ratio', 'Aim point (vertical)': 'aim_y_ratio',
+    'Pan offset': 'aim_pan_offset_deg', 'Tilt offset': 'aim_tilt_offset_deg',
+    'Aim timeout': 'aim_timeout_s', 'Verify duration': 'verify_duration_s',
+    'Lost-target grace': 'lost_grace_s', 'Result window': 'result_window_s',
+    'Maximum retries': 'max_retries', Cooldown: 'cooldown_s',
+    'Retarget deadband': 'retarget_deadband_deg', 'Only engage inside active zones': 'require_active_zone',
+    'Follow the target continuously': 'continuous_tracking',
+    'Save a snapshot on engagement': 'snapshot_on_engage',
+  },
+  ui: {
+    'Preview rate': 'preview_fps', 'Preview width': 'preview_width', 'JPEG quality': 'preview_quality',
+    'Telemetry rate': 'telemetry_hz', 'Draw detection overlays into the video': 'draw_overlays',
+    'Draw zones into the video': 'draw_zones',
+  },
+  system: {
+    'Event retention': 'event_retention_days', 'Maximum events': 'max_events',
+    'Snapshot retention': 'snapshot_retention_days', 'Snapshot budget': 'max_snapshot_mb',
+  },
+};
 
-  if (settings.loading) return <Spinner />;
-  if (settings.error || !settings.data) return <Banner>{settings.error ?? 'no settings'}</Banner>;
+const CAMERA_TEMPLATE_FIELDS = new Set([
+  'role', 'backend', 'transport', 'latency_ms', 'target_width', 'reconnect_delay_s',
+  'stall_timeout_s', 'enabled',
+]);
+
+function same(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function getPath(value: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((current, part) => {
+    if (current === null || typeof current !== 'object') return undefined;
+    return (current as Record<string, unknown>)[part];
+  }, value);
+}
+
+function setPath(value: unknown, path: string, next: unknown): void {
+  const parts = path.split('.');
+  let current = value as Record<string, unknown>;
+  parts.slice(0, -1).forEach((part) => {
+    current = current[part] as Record<string, unknown>;
+  });
+  current[parts.at(-1)!] = next;
+}
+
+type FieldContextValue = {
+  section: SectionName;
+  saved: unknown;
+  draft: unknown;
+  defaults: unknown;
+  prefix: string;
+  resetValue: (path: string, value: unknown) => void;
+};
+
+const FieldContext = createContext<FieldContextValue | null>(null);
+
+function useSettingAdornment(label: string) {
+  const context = useContext(FieldContext);
+  const relativePath = context ? FIELD_PATHS[context.section][label] : undefined;
+  if (!context || !relativePath) return {};
+  const path = `${context.prefix}${relativePath}`;
+  const draftValue = getPath(context.draft, path);
+  const savedValue = getPath(context.saved, path);
+  let defaultValue = getPath(context.defaults, path);
+  let canFactoryReset = true;
+  if (context.section === 'cameras' && /^sources\.\d+\.(id|name|url)$/.test(path)) {
+    defaultValue = undefined;
+    canFactoryReset = false;
+  }
+  if (defaultValue === undefined && context.section === 'cameras') {
+    const match = path.match(/^sources\.\d+\.(.+)$/);
+    if (match && CAMERA_TEMPLATE_FIELDS.has(match[1])) {
+      defaultValue = getPath(context.defaults, `sources.0.${match[1]}`);
+    }
+  }
+  if (context.section === 'cameras' && path === 'primary_id') {
+    const sourceIds = ((context.draft as SettingsType['cameras']).sources ?? []).map(
+      (source) => source.id,
+    );
+    canFactoryReset = typeof defaultValue === 'string' && sourceIds.includes(defaultValue);
+  }
+  const unsaved = !same(draftValue, savedValue);
+  const savedOverride = defaultValue !== undefined && !same(savedValue, defaultValue);
+  const settingStatus: SettingStatus | undefined = unsaved
+    ? 'unsaved'
+    : savedOverride
+      ? 'saved'
+      : undefined;
+  if (!settingStatus) return {};
+  if (unsaved && savedValue === undefined) return { settingStatus };
+  if (!unsaved && !canFactoryReset) return { settingStatus };
+  const resetTarget = unsaved ? savedValue : defaultValue;
+  return {
+    settingStatus,
+    onSettingReset: () => context.resetValue(path, clone(resetTarget)),
+    settingResetLabel: unsaved ? `Undo unsaved change to ${label}` : `Reset ${label} to factory default`,
+  };
+}
+
+function TextField(props: ComponentProps<typeof BaseTextField>) {
+  return <BaseTextField {...props} {...useSettingAdornment(props.label)} />;
+}
+
+function NumberField(props: ComponentProps<typeof BaseNumberField>) {
+  return <BaseNumberField {...props} {...useSettingAdornment(props.label)} />;
+}
+
+function Toggle(props: ComponentProps<typeof BaseToggle>) {
+  return <BaseToggle {...props} {...useSettingAdornment(props.label)} />;
+}
+
+function SelectField<T extends string>(props: {
+  label: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange: (value: T) => void;
+  hint?: string;
+}) {
+  return <BaseSelectField {...props} {...useSettingAdornment(props.label)} />;
+}
+
+export default function Settings() {
+  const loaded = useAsync(async () => {
+    const [values, defaults] = await Promise.all([api.settings(), api.settingsDefaults()]);
+    return { values, defaults };
+  }, []);
+  const [tab, setTab] = useState<SectionName>('cameras');
+  const [saved, setSaved] = useState<SettingsType | null>(null);
+  const [draft, setDraft] = useState<SettingsType | null>(null);
+  const [saving, setSaving] = useState(false);
+  const { notify } = useToast();
+
+  useEffect(() => {
+    if (loaded.data && saved === null) {
+      setSaved(clone(loaded.data.values));
+      setDraft(clone(loaded.data.values));
+    }
+  }, [loaded.data, saved]);
+
+  if (loaded.loading) return <Spinner />;
+  if (loaded.error || !loaded.data) return <Banner>{loaded.error ?? 'no settings'}</Banner>;
+  if (!saved || !draft) return <Spinner />;
+  const defaults = loaded.data.defaults;
+
+  const dirtySections = TABS.filter((entry) => !same(draft[entry.id], saved[entry.id])).map(
+    (entry) => entry.id,
+  );
+  const save = async () => {
+    if (dirtySections.length === 0) return;
+    setSaving(true);
+    try {
+      const patch = Object.fromEntries(
+        dirtySections.map((section) => [section, draft[section]]),
+      ) as Partial<SettingsType>;
+      const updated = await api.patchAllSettings(patch);
+      setSaved(clone(updated));
+      setDraft(clone(updated));
+      notify('All settings saved', 'good');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'bad');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateSection = (section: SectionName, patch: Record<string, unknown>) => {
+    setDraft((current) => ({
+      ...current!,
+      [section]: { ...(current![section] as object), ...patch },
+    }));
+  };
+
+  const cameraAdded = (cameras: SettingsType['cameras']) => {
+    setSaved((current) => ({ ...current!, cameras: clone(cameras) }));
+    setDraft((current) => {
+      const local = current!.cameras;
+      const localIds = new Set(local.sources.map((source) => source.id));
+      const added = cameras.sources.filter((source) => !localIds.has(source.id));
+      return {
+        ...current!,
+        cameras: {
+          ...local,
+          sources: [...local.sources, ...added],
+          primary_id: same(local.primary_id, saved.cameras.primary_id)
+            ? cameras.primary_id
+            : local.primary_id,
+        },
+      };
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -43,74 +297,89 @@ export default function Settings() {
               tab === entry.id ? 'bg-panelalt text-ink' : 'text-muted hover:text-ink'
             }`}
           >
+            <span
+              className={`mr-1.5 inline-block h-2 w-2 rounded-full ${
+                !same(draft[entry.id], saved[entry.id])
+                  ? 'bg-warn'
+                  : !same(saved[entry.id], defaults[entry.id])
+                    ? 'bg-accent'
+                    : 'invisible'
+              }`}
+            />
             {entry.label}
           </button>
         ))}
       </nav>
 
-      <SectionEditor key={tab} section={tab} settings={settings.data} onSaved={settings.reload} />
+      <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-edge bg-panel/95 px-3 py-2 shadow-lg backdrop-blur">
+        <p className="text-xs text-muted">
+          {dirtySections.length > 0 ? (
+            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-warn" />{dirtySections.length} tab{dirtySections.length === 1 ? '' : 's'} with unsaved changes</>
+          ) : (
+            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />All changes saved</>
+          )}
+        </p>
+        <button className="btn btn-primary px-3 py-1 text-xs" disabled={dirtySections.length === 0 || saving} onClick={save}>
+          {saving ? 'Saving…' : 'Save all changes'}
+        </button>
+      </div>
+
+      <SectionEditor
+        section={tab}
+        saved={saved}
+        draft={draft}
+        defaults={defaults}
+        update={(patch) => updateSection(tab, patch)}
+        setDraft={setDraft}
+        onCameraAdded={cameraAdded}
+      />
     </div>
   );
 }
 
 function SectionEditor({
   section,
-  settings,
-  onSaved,
+  saved,
+  draft,
+  defaults,
+  update,
+  setDraft,
+  onCameraAdded,
 }: {
   section: SectionName;
-  settings: SettingsType;
-  onSaved: () => void;
+  saved: SettingsType;
+  draft: SettingsType;
+  defaults: SettingsType;
+  update: (patch: Record<string, unknown>) => void;
+  setDraft: Dispatch<SetStateAction<SettingsType | null>>;
+  onCameraAdded: (cameras: SettingsType['cameras']) => void;
 }) {
-  const { attempt } = useToast();
-  const [draft, setDraft] = useState<SettingsType[SectionName]>(settings[section]);
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    setDraft(settings[section]);
-    setDirty(false);
-  }, [section, settings]);
-
-  const update = (patch: Record<string, unknown>) => {
-    setDraft(
-      (current) => ({ ...(current as object), ...patch }) as unknown as SettingsType[SectionName],
-    );
-    setDirty(true);
+  const resetValue = (path: string, value: unknown) => {
+    setDraft((current) => {
+      const next = clone(current!);
+      setPath(next[section], path, value);
+      return next;
+    });
   };
 
-  const save = async () => {
-    const ok = await attempt(
-      () => api.patchSettings(section, draft as never),
-      'settings saved',
-    );
-    if (ok) {
-      setDirty(false);
-      onSaved();
-    }
-  };
-
-  const reset = async () => {
-    if (!window.confirm(`Reset "${section}" to defaults?`)) return;
-    if (await attempt(() => api.resetSettings(section), 'section reset')) onSaved();
+  const resetSection = () => {
+    setDraft((current) => ({ ...current!, [section]: clone(defaults[section]) }));
   };
 
   return (
     <Card
       title={section}
       actions={
-        <div className="flex gap-2">
-          <button className="btn px-2 py-1 text-xs" onClick={reset}>
-            Reset to defaults
-          </button>
-          <button className="btn btn-primary px-3 py-1 text-xs" disabled={!dirty} onClick={save}>
-            Save
-          </button>
-        </div>
+        <button className="btn px-2 py-1 text-xs" onClick={resetSection} disabled={same(draft[section], defaults[section])}>
+          Reset section
+        </button>
       }
     >
-      <div className="grid gap-x-6 md:grid-cols-2">
-        <Fields section={section} draft={draft} update={update} onReload={onSaved} />
-      </div>
+      <FieldContext.Provider value={{ section, saved: saved[section], draft: draft[section], defaults: defaults[section], prefix: '', resetValue }}>
+        <div className="grid gap-x-6 md:grid-cols-2">
+          <Fields section={section} draft={draft[section]} update={update} onCameraAdded={onCameraAdded} />
+        </div>
+      </FieldContext.Provider>
     </Card>
   );
 }
@@ -119,12 +388,12 @@ function Fields({
   section,
   draft,
   update,
-  onReload,
+  onCameraAdded,
 }: {
   section: SectionName;
   draft: unknown;
   update: (patch: Record<string, unknown>) => void;
-  onReload: () => void;
+  onCameraAdded: (cameras: SettingsType['cameras']) => void;
 }) {
   switch (section) {
     case 'cameras':
@@ -132,7 +401,7 @@ function Fields({
         <CameraFields
           draft={draft as SettingsType['cameras']}
           update={update}
-          onReload={onReload}
+          onCameraAdded={onCameraAdded}
         />
       );
     case 'detector': {
@@ -759,7 +1028,11 @@ function suggestedCameraId(result: OnvifProfileResult, profile: OnvifProfile): s
   return `${base || 'camera'}${hostSuffix ? `-${hostSuffix}` : ''}`.slice(0, 64);
 }
 
-function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
+function CameraDiscoveryPanel({
+  onAdded,
+}: {
+  onAdded: (cameras: SettingsType['cameras']) => void;
+}) {
   const { notify } = useToast();
   const [devices, setDevices] = useState<OnvifDevice[]>([]);
   const [xaddr, setXaddr] = useState('');
@@ -814,7 +1087,7 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
     const cameraId = suggestedCameraId(result!, profile);
     setBusy(profile.token);
     try {
-      await api.onboardCamera({
+      const cameras = await api.onboardCamera({
         id: cameraId,
         name: `${result!.device.manufacturer} ${result!.device.model} — ${profile.name}`.trim(),
         role,
@@ -824,7 +1097,7 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
         make_primary: role === 'overview',
       });
       notify(`camera added as ${cameraId}`, 'good');
-      onAdded();
+      onAdded(cameras);
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), 'bad');
     } finally {
@@ -875,7 +1148,7 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
 
       <div className="mt-3 grid gap-x-4 md:grid-cols-2">
         <div className="md:col-span-2">
-          <TextField
+          <BaseTextField
             label="ONVIF device service URL"
             value={xaddr}
             onChange={(value) => {
@@ -887,13 +1160,13 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
             hint="Manual entry works across subnets. Include the camera's ONVIF port; it is often not port 80 (for example :2020 or :8000)."
           />
         </div>
-        <TextField
+        <BaseTextField
           label="Camera account username"
           value={username}
           onChange={setUsername}
           autoComplete="username"
         />
-        <TextField
+        <BaseTextField
           label="Camera account password"
           type="password"
           value={password}
@@ -901,7 +1174,7 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
           hint="Stored separately from settings and never returned by the API."
           autoComplete="current-password"
         />
-        <SelectField
+        <BaseSelectField
           label="Camera role"
           value={role}
           options={[
@@ -965,11 +1238,11 @@ function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
 function CameraFields({
   draft,
   update,
-  onReload,
+  onCameraAdded,
 }: {
   draft: SettingsType['cameras'];
   update: (patch: Record<string, unknown>) => void;
-  onReload: () => void;
+  onCameraAdded: (cameras: SettingsType['cameras']) => void;
 }) {
   const sources = draft.sources ?? [];
 
@@ -1002,7 +1275,7 @@ function CameraFields({
 
   return (
     <>
-      <CameraDiscoveryPanel onAdded={onReload} />
+      <CameraDiscoveryPanel onAdded={onCameraAdded} />
 
       <div className="md:col-span-2">
         <SelectField
@@ -1014,7 +1287,8 @@ function CameraFields({
       </div>
 
       {sources.map((source, index) => (
-        <div key={source.id} className="md:col-span-2 mt-3 rounded-lg border border-edge p-3">
+        <FieldPrefix key={`${index}-${source.id}`} prefix={`sources.${index}.`}>
+        <div className="md:col-span-2 mt-3 rounded-lg border border-edge p-3">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-medium">{source.name || source.id}</h3>
             {sources.length > 1 && (
@@ -1100,6 +1374,7 @@ function CameraFields({
             />
           </div>
         </div>
+        </FieldPrefix>
       ))}
 
       <div className="md:col-span-2 mt-3">
@@ -1109,4 +1384,10 @@ function CameraFields({
       </div>
     </>
   );
+}
+
+function FieldPrefix({ prefix, children }: { prefix: string; children: ReactNode }) {
+  const context = useContext(FieldContext);
+  if (!context) return children;
+  return <FieldContext.Provider value={{ ...context, prefix }}>{children}</FieldContext.Provider>;
 }

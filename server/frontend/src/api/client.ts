@@ -95,6 +95,12 @@ export const api = {
 
   // --- settings -----------------------------------------------------
   settings: () => request<Settings>('/api/settings'),
+  settingsDefaults: () => request<Settings>('/api/settings-defaults'),
+  patchAllSettings: (patch: Partial<Settings>) =>
+    request<Settings>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   patchSettings: <S extends SettingsSection>(section: S, patch: Partial<Settings[S]>) =>
     request<Settings[S]>(`/api/settings/${section}`, {
       method: 'PATCH',

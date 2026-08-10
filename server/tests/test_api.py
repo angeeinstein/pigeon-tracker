@@ -70,6 +70,30 @@ class TestSettings:
         assert response.status_code == 200
         assert client.get("/api/settings/ui").json()["preview_fps"] == 4
 
+    def test_defaults_are_separate_from_saved_values(self, client: TestClient) -> None:
+        defaults = client.get("/api/settings-defaults")
+        assert defaults.status_code == 200
+        assert defaults.json()["ui"]["preview_fps"] == 12
+        assert client.get("/api/settings/ui").json()["preview_fps"] == 4
+
+    def test_patch_multiple_sections_atomically(self, client: TestClient) -> None:
+        response = client.patch(
+            "/api/settings",
+            json={"ui": {"preview_fps": 5}, "motion": {"max_speed_deg_s": 55}},
+        )
+        assert response.status_code == 200
+        assert response.json()["ui"]["preview_fps"] == 5
+        assert response.json()["motion"]["max_speed_deg_s"] == 55
+
+        rejected = client.patch(
+            "/api/settings",
+            json={"ui": {"preview_fps": 6}, "motion": {"max_speed_deg_s": -1}},
+        )
+        assert rejected.status_code == 422
+        settings = client.get("/api/settings").json()
+        assert settings["ui"]["preview_fps"] == 5
+        assert settings["motion"]["max_speed_deg_s"] == 55
+
     def test_invalid_patch_is_rejected(self, client: TestClient) -> None:
         response = client.patch("/api/settings/motion", json={"max_speed_deg_s": -1})
         assert response.status_code == 422

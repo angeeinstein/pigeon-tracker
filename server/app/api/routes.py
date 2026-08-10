@@ -133,6 +133,29 @@ async def get_settings(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     return runtime.settings_store.as_dict()
 
 
+@router.get("/settings-defaults")
+async def get_settings_defaults(_auth: AuthDep) -> dict[str, Any]:
+    """Return factory defaults separately from the currently saved values."""
+    return {name: model().model_dump(mode="json") for name, model in SECTION_MODELS.items()}
+
+
+@router.patch("/settings")
+async def patch_settings(
+    patch: dict[str, dict[str, Any]], runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, Any]:
+    """Validate and save all edited sections as one atomic operation."""
+    try:
+        await runtime.settings_store.update(patch)
+    except SettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.events.emit(
+        ev.CAT_SYSTEM,
+        "settings updated",
+        data={"sections": sorted(patch)},
+    )
+    return runtime.settings_store.as_dict()
+
+
 @router.get("/settings/{section}")
 async def get_settings_section(section: str, runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     if section not in SECTION_MODELS:

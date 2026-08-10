@@ -1,6 +1,59 @@
 /** Small shared UI primitives. */
 
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
+
+export type SettingStatus = 'unsaved' | 'saved';
+
+type SettingAdornment = {
+  settingStatus?: SettingStatus;
+  onSettingReset?: () => void;
+  settingResetLabel?: string;
+};
+
+function FieldHeading({
+  id,
+  label,
+  suffix,
+  settingStatus,
+  onSettingReset,
+  settingResetLabel,
+}: SettingAdornment & { id?: string; label: string; suffix?: string }) {
+  return (
+    <span className="mb-1 flex min-h-5 items-center justify-between gap-2">
+      <label htmlFor={id} className="label mb-0">
+        <span
+          className={`mr-1.5 inline-block h-2 w-2 rounded-full align-middle ${
+            settingStatus === 'unsaved'
+              ? 'bg-warn'
+              : settingStatus === 'saved'
+                ? 'bg-accent'
+                : 'invisible'
+          }`}
+          title={
+            settingStatus === 'unsaved'
+              ? 'Changed, not saved yet'
+              : settingStatus === 'saved'
+                ? 'Saved override of the factory default'
+                : undefined
+          }
+        />
+        {label}
+        {suffix && <span className="text-muted/70"> ({suffix})</span>}
+      </label>
+      {onSettingReset && (
+        <button
+          type="button"
+          className="rounded px-1.5 py-0.5 text-xs text-muted transition hover:bg-panelalt hover:text-ink"
+          onClick={onSettingReset}
+          title={settingResetLabel}
+          aria-label={settingResetLabel}
+        >
+          &#8630;
+        </button>
+      )}
+    </span>
+  );
+}
 
 export function Card({
   title,
@@ -68,15 +121,18 @@ export function Toggle({
   onChange,
   hint,
   disabled,
+  settingStatus,
+  onSettingReset,
+  settingResetLabel,
 }: {
   label: string;
   checked: boolean;
   onChange: (value: boolean) => void;
   hint?: string;
   disabled?: boolean;
-}) {
+} & SettingAdornment) {
   return (
-    <label className={`flex items-start gap-3 py-1.5 ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`flex items-start gap-3 py-1.5 ${disabled ? 'opacity-50' : ''}`}>
       <button
         type="button"
         role="switch"
@@ -91,11 +147,35 @@ export function Toggle({
             ${checked ? 'translate-x-4' : 'translate-x-0.5'}`}
         />
       </button>
-      <span>
-        <span className="text-sm">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center justify-between gap-2 text-sm">
+          <span>
+            <span
+              className={`mr-1.5 inline-block h-2 w-2 rounded-full ${
+                settingStatus === 'unsaved'
+                  ? 'bg-warn'
+                  : settingStatus === 'saved'
+                    ? 'bg-accent'
+                    : 'invisible'
+              }`}
+            />
+            {label}
+          </span>
+          {onSettingReset && (
+            <button
+              type="button"
+              className="rounded px-1.5 py-0.5 text-xs text-muted transition hover:bg-panelalt hover:text-ink"
+              onClick={onSettingReset}
+              title={settingResetLabel}
+              aria-label={settingResetLabel}
+            >
+              &#8630;
+            </button>
+          )}
+        </span>
         {hint && <span className="block text-xs text-muted">{hint}</span>}
       </span>
-    </label>
+    </div>
   );
 }
 
@@ -108,6 +188,9 @@ export function NumberField({
   max,
   hint,
   suffix,
+  settingStatus,
+  onSettingReset,
+  settingResetLabel,
 }: {
   label: string;
   value: number;
@@ -117,14 +200,13 @@ export function NumberField({
   max?: number;
   hint?: string;
   suffix?: string;
-}) {
+} & SettingAdornment) {
+  const id = useId();
   return (
-    <label className="block py-1.5">
-      <span className="label">
-        {label}
-        {suffix && <span className="text-muted/70"> ({suffix})</span>}
-      </span>
+    <div className="block py-1.5">
+      <FieldHeading {...{ id, label, suffix, settingStatus, onSettingReset, settingResetLabel }} />
       <input
+        id={id}
         type="number"
         className="field tabular"
         value={Number.isFinite(value) ? value : 0}
@@ -137,7 +219,7 @@ export function NumberField({
         }}
       />
       {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
-    </label>
+    </div>
   );
 }
 
@@ -149,6 +231,9 @@ export function TextField({
   placeholder,
   type = 'text',
   autoComplete,
+  settingStatus,
+  onSettingReset,
+  settingResetLabel,
 }: {
   label: string;
   value: string;
@@ -157,11 +242,13 @@ export function TextField({
   placeholder?: string;
   type?: string;
   autoComplete?: string;
-}) {
+} & SettingAdornment) {
+  const id = useId();
   return (
-    <label className="block py-1.5">
-      <span className="label">{label}</span>
+    <div className="block py-1.5">
+      <FieldHeading {...{ id, label, settingStatus, onSettingReset, settingResetLabel }} />
       <input
+        id={id}
         type={type}
         className="field"
         value={value}
@@ -170,7 +257,7 @@ export function TextField({
         onChange={(event) => onChange(event.target.value)}
       />
       {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
-    </label>
+    </div>
   );
 }
 
@@ -180,17 +267,22 @@ export function SelectField<T extends string>({
   options,
   onChange,
   hint,
+  settingStatus,
+  onSettingReset,
+  settingResetLabel,
 }: {
   label: string;
   value: T;
   options: readonly { value: T; label: string }[];
   onChange: (value: T) => void;
   hint?: string;
-}) {
+} & SettingAdornment) {
+  const id = useId();
   return (
-    <label className="block py-1.5">
-      <span className="label">{label}</span>
+    <div className="block py-1.5">
+      <FieldHeading {...{ id, label, settingStatus, onSettingReset, settingResetLabel }} />
       <select
+        id={id}
         className="field"
         value={value}
         onChange={(event) => onChange(event.target.value as T)}
@@ -202,7 +294,7 @@ export function SelectField<T extends string>({
         ))}
       </select>
       {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
-    </label>
+    </div>
   );
 }
 
