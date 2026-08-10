@@ -8,6 +8,7 @@ nothing from here at start-up.
 from __future__ import annotations
 
 import importlib.util
+import os
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -90,7 +91,26 @@ class YoloDetector(Detector):
             return "cpu"
         return "cuda" if cuda_available() else "cpu"
 
+    def _prepare_writable_dirs(self) -> None:
+        """Point every cache Ultralytics/matplotlib might write at the models dir.
+
+        Under systemd the code directory is read-only and ``HOME`` may not be
+        somewhere useful. Without this, model loading dies with a confusing
+        ``Read-only file system`` error on a perfectly correct installation.
+        """
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        defaults = {
+            "YOLO_CONFIG_DIR": self.models_dir / ".ultralytics",
+            "MPLCONFIGDIR": self.models_dir / ".matplotlib",
+        }
+        for name, path in defaults.items():
+            if not os.environ.get(name):
+                path.mkdir(parents=True, exist_ok=True)
+                os.environ[name] = str(path)
+
     def load(self) -> None:
+        self._prepare_writable_dirs()
+
         from ultralytics import YOLO
 
         model_path = self._resolve_model_path()

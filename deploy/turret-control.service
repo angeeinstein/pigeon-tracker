@@ -4,11 +4,25 @@ Documentation=https://github.com/angeeinstein/pigeon-tracker
 After=network-online.target
 Wants=network-online.target
 
+# Never give up after repeated crashes: an unattended turret should keep
+# trying to come back rather than sit dead until someone notices. This key
+# only takes effect in [Unit]; systemd silently ignores it in [Service].
+StartLimitIntervalSec=0
+
 [Service]
 Type=exec
 User=turret
 Group=turret
-WorkingDirectory=/opt/turret-control/server
+# The working directory is the *models* directory, not the code directory.
+# Ultralytics downloads weights relative to the CWD on first use, and the code
+# directory is read-only (ProtectSystem=strict). Pointing the CWD at the models
+# directory means a downloaded model lands exactly where the detector looks for
+# it on the next start.
+WorkingDirectory=/var/lib/turret-control/models
+Environment=PYTHONPATH=/opt/turret-control/server
+Environment=HOME=/var/lib/turret-control
+Environment=YOLO_CONFIG_DIR=/var/lib/turret-control/models/.ultralytics
+Environment=MPLCONFIGDIR=/var/lib/turret-control/models/.matplotlib
 EnvironmentFile=/etc/turret-control/turret.env
 
 # One worker, deliberately: this process owns the controller WebSocket, the
@@ -23,9 +37,6 @@ KillSignal=SIGTERM
 TimeoutStopSec=30
 Restart=always
 RestartSec=5
-# Do not give up after repeated crashes: an unattended turret should keep
-# trying to come back rather than sit dead until someone notices.
-StartLimitIntervalSec=0
 
 StandardOutput=journal
 StandardError=journal

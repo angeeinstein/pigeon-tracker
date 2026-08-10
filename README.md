@@ -24,18 +24,26 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 ## Status
 
-| Part                                                    | State                                       |
-| ------------------------------------------------------- | ------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)     | Working; 163 tests pass                     |
-| Web UI (React + TypeScript + Vite + Tailwind)            | Written; **not yet built/run** (no Node here) |
-| ESP32 firmware (ESP-IDF/PlatformIO)                      | Written; **not yet compiled or flashed**    |
-| Controller simulator                                     | Working; used for the end-to-end run below  |
-| Installer / systemd unit                                 | Written; syntax-checked, **not yet run on a real LXC** |
+| Part                                                 | State                                                   |
+| ---------------------------------------------------- | ------------------------------------------------------- |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 163 tests pass; running on a real LXC          |
+| Web UI (React + TypeScript + Vite + Tailwind)         | Builds and is served; **not yet reviewed in a browser** |
+| Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
+| YOLO detection                                        | Model loads and runs (73 ms/frame on 2 vCPU, CPU-only)  |
+| Controller simulator                                  | Working; drove the full engagement sequence             |
+| ESP32 firmware (ESP-IDF/PlatformIO)                   | Written; **not yet compiled or flashed**                |
 
-The full chain has been exercised against the simulator: homing → arm → manual
-spray (with the interval guard refusing the second one) → calibration →
-click-to-aim → automatic engagement through `DETECTED → TRACKING → AIMING →
-VERIFY_TARGET → SPRAY → VERIFY_RESULT` → disarm.
+Verified end to end on a 2-vCPU / 1 GB Ubuntu 24.04 container: fresh install →
+frontend build → service up and enabled → controller link with token auth →
+homing → arm → manual spray (interval guard refusing the second) → calibration
+→ click-to-aim (exact interpolation, inverse mapping agrees) → automatic
+engagement through `DETECTED → AIMING → VERIFY_TARGET → SPRAY → VERIFY_RESULT`
+→ e-stop (latched, homing invalidated, motion refused) → update preserving all
+user data → reboot coming back **disarmed with the valve closed**.
+
+Resource use with the AI stack loaded: ~394 MB RSS, ~890 MB venv, model at
+`/var/lib/turret-control/models/yolov8n.pt`. 1 GB of RAM is enough but leaves
+little headroom — 2 GB is a more comfortable container size.
 
 ---
 
