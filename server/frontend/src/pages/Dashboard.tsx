@@ -81,7 +81,7 @@ export default function Dashboard() {
           {telemetry?.state_reason && (
             <span className="text-xs text-muted">{telemetry.state_reason}</span>
           )}
-          <span className="ml-auto text-xs text-muted">
+          <span className="w-full text-xs text-muted sm:ml-auto sm:w-auto sm:text-right">
             {telemetry?.frame
               ? `${telemetry.frame.width}×${telemetry.frame.height} · ${telemetry.frame.inference_ms.toFixed(0)} ms inference`
               : 'no frames'}

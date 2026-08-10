@@ -148,6 +148,7 @@ export function TextField({
   hint,
   placeholder,
   type = 'text',
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -155,6 +156,7 @@ export function TextField({
   hint?: string;
   placeholder?: string;
   type?: string;
+  autoComplete?: string;
 }) {
   return (
     <label className="block py-1.5">
@@ -164,6 +166,7 @@ export function TextField({
         className="field"
         value={value}
         placeholder={placeholder}
+        autoComplete={autoComplete}
         onChange={(event) => onChange(event.target.value)}
       />
       {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}

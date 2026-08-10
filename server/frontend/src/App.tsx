@@ -69,14 +69,14 @@ function TopBar() {
       <div className="flex flex-wrap items-center gap-2">
         <span className="mr-2 text-sm font-semibold tracking-wide">TURRET</span>
 
-        <nav className="order-3 -mx-1 flex w-full gap-1 overflow-x-auto pb-1 sm:order-none sm:w-auto sm:pb-0">
+        <nav className="order-3 -mx-1 grid w-full grid-cols-3 gap-1 pb-1 sm:order-none sm:mx-0 sm:flex sm:w-auto sm:pb-0">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
               className={({ isActive }) =>
-                `whitespace-nowrap rounded-lg px-3 py-1.5 text-sm transition ${
+                `whitespace-nowrap rounded-lg px-2 py-1.5 text-center text-sm transition sm:px-3 ${
                   isActive ? 'bg-panelalt text-ink' : 'text-muted hover:text-ink'
                 }`
               }

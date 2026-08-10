@@ -81,6 +81,70 @@ class TestSettings:
         assert "properties" in payload["spray"]
 
 
+class TestCameraOnboarding:
+    def test_discovery_and_profiles_do_not_echo_password(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "app.api.routes.discover_onvif",
+            lambda timeout: [
+                {
+                    "host": "192.168.1.20",
+                    "port": 2020,
+                    "xaddr": "http://192.168.1.20:2020/onvif/device_service",
+                    "xaddrs": [],
+                    "name": "Balcony",
+                    "hardware": "C100",
+                    "location": "",
+                    "types": [],
+                }
+            ],
+        )
+        discovery = client.post("/api/cameras/discover").json()
+        assert discovery["devices"][0]["name"] == "Balcony"
+
+        monkeypatch.setattr(
+            "app.api.routes.fetch_onvif_profiles",
+            lambda xaddr, username, password: {
+                "device": {"host": "192.168.1.20", "xaddr": xaddr},
+                "profiles": [{"token": "main", "name": "Main", "uri": "rtsp://192.168.1.20/live"}],
+            },
+        )
+        profiles = client.post(
+            "/api/cameras/onvif/profiles",
+            json={
+                "xaddr": "http://192.168.1.20:2020/onvif/device_service",
+                "username": "viewer",
+                "password": "very-secret",
+            },
+        ).json()
+        assert "very-secret" not in str(profiles)
+
+    def test_onboard_stores_redacted_credentials(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "app.api.routes.validate_private_device_url",
+            lambda url, schemes: ("192.168.1.20", 554, False),
+        )
+        response = client.post(
+            "/api/cameras/onboard",
+            json={
+                "id": "test-camera",
+                "name": "Test camera",
+                "role": "aux",
+                "uri": "rtsp://192.168.1.20/live",
+                "username": "viewer",
+                "password": "very-secret",
+                "make_primary": False,
+            },
+        )
+        assert response.status_code == 201
+        assert "very-secret" not in response.text
+        status = client.get("/api/cameras/credentials").json()["test-camera"]
+        assert status == {"camera_id": "test-camera", "configured": True, "username": "viewer"}
+
+
 class TestControlWithoutHardware:
     def test_move_without_a_controller_is_a_conflict(self, client: TestClient) -> None:
         response = client.post("/api/control/move", json={"pan_deg": 10, "tilt_deg": 0})

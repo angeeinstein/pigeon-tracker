@@ -207,9 +207,9 @@ class TurretManager:
 
         if isinstance(message, proto.Status):
             self.state.apply(message)
-            for listener in list(self._status_listeners):
+            for status_listener in list(self._status_listeners):
                 try:
-                    await listener(self.state)
+                    await status_listener(self.state)
                 except Exception:
                     log.exception("status listener failed")
 
@@ -229,9 +229,9 @@ class TurretManager:
                 "controller event",
                 extra={"ctx": {"event": message.event, **message.detail}},
             )
-            for listener in list(self._event_listeners):
+            for event_listener in list(self._event_listeners):
                 try:
-                    await listener(message.event, message.detail)
+                    await event_listener(message.event, message.detail)
                 except Exception:
                     log.exception("controller event listener failed")
 

@@ -23,11 +23,13 @@ import string
 import threading
 import time
 from functools import lru_cache
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import cv2
 import numpy as np
 
 from app.camera.base import CameraSource, Frame
+from app.camera.credentials import CameraCredentials
 from app.logging_config import get_logger
 from app.services.settings_schema import CameraConfig
 
@@ -53,6 +55,28 @@ def expand_credentials(url: str) -> str:
 def redact_url(url: str) -> str:
     """Strip credentials so a URL can safely be logged or shown in the UI."""
     return re.sub(r"//[^/@]*@", "//***:***@", url)
+
+
+def inject_credentials(url: str, credentials: CameraCredentials | None) -> str:
+    """Add protected credentials to a URL that does not already contain any."""
+    if credentials is None:
+        return url
+    parsed = urlsplit(url)
+    if parsed.username is not None or not parsed.hostname:
+        return url
+    username = quote(credentials.username, safe="")
+    password = quote(credentials.password, safe="")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    port = f":{parsed.port}" if parsed.port else ""
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"{username}:{password}@{host}{port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 @lru_cache(maxsize=1)
@@ -101,8 +125,9 @@ def ffmpeg_capture_options(config: CameraConfig) -> str:
 class RtspCameraSource(CameraSource):
     """Decodes an RTSP stream in a background thread into the latest-frame buffer."""
 
-    def __init__(self, config: CameraConfig) -> None:
+    def __init__(self, config: CameraConfig, credentials: CameraCredentials | None = None) -> None:
         super().__init__(config)
+        self._credentials = credentials
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._seq = 0
@@ -135,7 +160,7 @@ class RtspCameraSource(CameraSource):
 
     # -- worker ----------------------------------------------------------
     def _open(self) -> cv2.VideoCapture | None:
-        url = expand_credentials(self.config.url)
+        url = inject_credentials(expand_credentials(self.config.url), self._credentials)
         if not url:
             self.status.error = "no URL configured"
             return None

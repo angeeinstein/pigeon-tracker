@@ -25,6 +25,19 @@ homing, and the valve's hard timeout.
    `include/secrets.h` is git-ignored. The token must match
    `TURRET_CONTROLLER_TOKEN` in the server's environment file.
 
+   The Wi-Fi password is set specifically in `include/secrets.h`:
+
+   ```c
+   #define TURRET_WIFI_SSID "your-network"
+   #define TURRET_WIFI_PASSWORD "your-password"
+   ```
+
+   Wi-Fi, the server URI, the controller token and GPIO pins are flash-time
+   settings. Once the ESP32 joins Wi-Fi it initiates the server connection, so
+   no network scan or pairing step is required. Motion, mechanics, homing,
+   limits, timeouts and other normal operating settings are editable in
+   **Settings → Controller/Motion** and pushed to persistent ESP32 storage.
+
 ## Opening it in VS Code
 
 The PlatformIO extension only activates when `platformio.ini` sits in a
@@ -50,6 +63,8 @@ pio run -t menuconfig    # ESP-IDF configuration
 ```
 
 From the repository root, add `-d firmware` to any of those.
+To choose a specific Windows serial adapter, append
+`--upload-port COM4` when uploading and use `pio device monitor -p COM4`.
 
 ### Verified build
 

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.camera.credentials import CameraCredentialStore
 from app.camera.manager import CameraManager
 from app.camera.rtsp import encode_jpeg, safe_filename
 from app.config import DeploymentConfig
@@ -57,7 +58,11 @@ class Runtime:
         self.telemetry = TelemetryHub()
 
         settings = self.settings_store.current
-        self.cameras = CameraManager(force_simulated=config.force_simulated_camera)
+        self.camera_credentials = CameraCredentialStore(config.data_dir / "camera_credentials.json")
+        self.cameras = CameraManager(
+            force_simulated=config.force_simulated_camera,
+            credential_store=self.camera_credentials,
+        )
         self.vision = VisionPipeline(
             self.cameras,
             settings,
@@ -134,6 +139,7 @@ class Runtime:
     # ------------------------------------------------------------------
     async def _on_settings_changed(self, settings: AppSettings, changed: set[str]) -> None:
         if "cameras" in changed:
+            self.camera_credentials.retain({camera.id for camera in settings.cameras.sources})
             await self.cameras.apply(settings.cameras)
         if changed & {"detector", "tracker", "cameras"}:
             await self.vision.apply_settings(settings, changed)

@@ -389,7 +389,14 @@ class ByteTracker:
         ]
         # De-duplicate (a track can appear in both lists after re-finding).
         seen: set[int] = set()
-        self._lost = [t for t in self._lost if not (id(t) in seen or seen.add(id(t)))]
+        deduplicated_lost: list[_STrack] = []
+        for track in self._lost:
+            track_id = id(track)
+            if track_id in seen:
+                continue
+            seen.add(track_id)
+            deduplicated_lost.append(track)
+        self._lost = deduplicated_lost
         tracked_ids = {id(t) for t in self._tracked}
         self._lost = [t for t in self._lost if id(t) not in tracked_ids]
 

@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { CameraConfig, Settings as SettingsType } from '../api/types';
+import type {
+  CameraConfig,
+  OnvifDevice,
+  OnvifProfile,
+  OnvifProfileResult,
+  Settings as SettingsType,
+} from '../api/types';
 import { Banner, Card, NumberField, SelectField, Spinner, TextField, Toggle } from '../components/ui';
 import { useAsync } from '../hooks/useAsync';
 import { useToast } from '../state';
@@ -28,12 +34,12 @@ export default function Settings() {
 
   return (
     <div className="space-y-4">
-      <nav className="flex gap-1 overflow-x-auto pb-1">
+      <nav className="grid grid-cols-3 gap-1 pb-1 sm:flex sm:overflow-x-auto">
         {TABS.map((entry) => (
           <button
             key={entry.id}
             onClick={() => setTab(entry.id)}
-            className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-sm transition ${
+            className={`whitespace-nowrap rounded-lg px-2 py-1.5 text-center text-sm transition sm:px-3 ${
               tab === entry.id ? 'bg-panelalt text-ink' : 'text-muted hover:text-ink'
             }`}
           >
@@ -103,7 +109,7 @@ function SectionEditor({
       }
     >
       <div className="grid gap-x-6 md:grid-cols-2">
-        <Fields section={section} draft={draft} update={update} />
+        <Fields section={section} draft={draft} update={update} onReload={onSaved} />
       </div>
     </Card>
   );
@@ -113,14 +119,22 @@ function Fields({
   section,
   draft,
   update,
+  onReload,
 }: {
   section: SectionName;
   draft: unknown;
   update: (patch: Record<string, unknown>) => void;
+  onReload: () => void;
 }) {
   switch (section) {
     case 'cameras':
-      return <CameraFields draft={draft as SettingsType['cameras']} update={update} />;
+      return (
+        <CameraFields
+          draft={draft as SettingsType['cameras']}
+          update={update}
+          onReload={onReload}
+        />
+      );
     case 'detector': {
       const value = draft as SettingsType['detector'];
       return (
@@ -362,6 +376,13 @@ function Fields({
             step={5}
             onChange={(v) => update({ home_timeout_s: v })}
           />
+          <NumberField
+            label="Ping interval"
+            suffix="s"
+            value={value.ping_interval_s}
+            step={0.5}
+            onChange={(v) => update({ ping_interval_s: v })}
+          />
           <Toggle
             label="Push configuration on connect"
             checked={value.push_config_on_connect}
@@ -422,6 +443,18 @@ function Fields({
             suffix="°"
             value={num('tilt_home_offset_deg')}
             onChange={(v) => setHardware({ tilt_home_offset_deg: v })}
+          />
+          <Toggle
+            label="Pan homes toward maximum endstop"
+            hint="Off means the minimum endstop. This must match the physical switch position."
+            checked={num('pan_home_dir') === 1}
+            onChange={(v) => setHardware({ pan_home_dir: v ? 1 : -1 })}
+          />
+          <Toggle
+            label="Tilt homes toward maximum endstop"
+            hint="Off means the minimum endstop. This must match the physical switch position."
+            checked={num('tilt_home_dir') === 1}
+            onChange={(v) => setHardware({ tilt_home_dir: v ? 1 : -1 })}
           />
           <Toggle
             label="Invert pan direction"
@@ -716,12 +749,212 @@ function Fields({
   }
 }
 
+function suggestedCameraId(result: OnvifProfileResult, profile: OnvifProfile): string {
+  const base = `${result.device.manufacturer}-${result.device.model}-${profile.name}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 55);
+  const hostSuffix = result.device.host.split('.').at(-1)?.replace(/[^a-z0-9]/gi, '') ?? '';
+  return `${base || 'camera'}${hostSuffix ? `-${hostSuffix}` : ''}`.slice(0, 64);
+}
+
+function CameraDiscoveryPanel({ onAdded }: { onAdded: () => void }) {
+  const { notify } = useToast();
+  const [devices, setDevices] = useState<OnvifDevice[]>([]);
+  const [xaddr, setXaddr] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [result, setResult] = useState<OnvifProfileResult | null>(null);
+  const [role, setRole] = useState<'overview' | 'turret' | 'aux'>('overview');
+  const [busy, setBusy] = useState<'discover' | 'connect' | string | null>(null);
+
+  const discover = async () => {
+    setBusy('discover');
+    setResult(null);
+    try {
+      const response = await api.discoverCameras();
+      setDevices(response.devices);
+      if (response.devices.length === 1) setXaddr(response.devices[0].xaddr);
+      notify(
+        response.devices.length
+          ? `found ${response.devices.length} ONVIF camera${response.devices.length === 1 ? '' : 's'}`
+          : 'no cameras found by multicast; you can enter the ONVIF address below',
+        response.devices.length ? 'good' : 'info',
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'bad');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const connect = async () => {
+    setBusy('connect');
+    setResult(null);
+    try {
+      const response = await api.onvifProfiles({ xaddr, username, password });
+      setResult(response);
+      notify(`connected to ${response.device.manufacturer} ${response.device.model}`, 'good');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'bad');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const add = async (profile: OnvifProfile) => {
+    const cameraId = suggestedCameraId(result!, profile);
+    setBusy(profile.token);
+    try {
+      await api.onboardCamera({
+        id: cameraId,
+        name: `${result!.device.manufacturer} ${result!.device.model} — ${profile.name}`.trim(),
+        role,
+        uri: profile.uri,
+        username,
+        password,
+        make_primary: role === 'overview',
+      });
+      notify(`camera added as ${cameraId}`, 'good');
+      onAdded();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'bad');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="md:col-span-2 mb-4 rounded-lg border border-accent/30 bg-accent/5 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium">Add a network camera</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            ONVIF finds the manufacturer-specific RTSP stream. Video still streams directly over
+            RTSP, so discovery adds no ongoing processing cost.
+          </p>
+        </div>
+        <button className="btn px-3 py-1 text-xs" disabled={busy !== null} onClick={discover}>
+          {busy === 'discover' ? 'Searching…' : 'Discover cameras'}
+        </button>
+      </div>
+
+      {devices.length > 0 && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {devices.map((device) => (
+            <button
+              key={device.xaddr}
+              type="button"
+              className={`rounded-lg border p-2 text-left text-sm transition ${
+                xaddr === device.xaddr
+                  ? 'border-accent bg-accent/10'
+                  : 'border-edge bg-panelalt hover:border-muted'
+              }`}
+              onClick={() => {
+                setXaddr(device.xaddr);
+                setResult(null);
+              }}
+            >
+              <span className="block font-medium">{device.name || device.host}</span>
+              <span className="block text-xs text-muted">
+                {[device.hardware, device.host].filter(Boolean).join(' · ')}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-x-4 md:grid-cols-2">
+        <div className="md:col-span-2">
+          <TextField
+            label="ONVIF device service URL"
+            value={xaddr}
+            onChange={(value) => {
+              setXaddr(value);
+              setResult(null);
+            }}
+            placeholder="http://192.168.1.217:2020/onvif/device_service"
+            hint="Manual entry works when multicast cannot cross from the server to the camera subnet."
+          />
+        </div>
+        <TextField
+          label="Camera account username"
+          value={username}
+          onChange={setUsername}
+          autoComplete="username"
+        />
+        <TextField
+          label="Camera account password"
+          type="password"
+          value={password}
+          onChange={setPassword}
+          hint="Stored separately from settings and never returned by the API."
+          autoComplete="current-password"
+        />
+        <SelectField
+          label="Camera role"
+          value={role}
+          options={[
+            { value: 'overview', label: 'Overview (make primary)' },
+            { value: 'turret', label: 'Turret-mounted' },
+            { value: 'aux', label: 'Auxiliary' },
+          ]}
+          onChange={setRole}
+        />
+        <div className="flex items-end py-1.5">
+          <button
+            className="btn btn-primary w-full"
+            disabled={!xaddr.trim() || busy !== null}
+            onClick={connect}
+          >
+            {busy === 'connect' ? 'Connecting…' : 'Connect and list streams'}
+          </button>
+        </div>
+      </div>
+
+      {result && (
+        <div className="mt-3 space-y-2 border-t border-edge pt-3">
+          <p className="text-xs text-muted">
+            {result.device.manufacturer} {result.device.model} at {result.device.host}. Choose a
+            stream; a lower-resolution substream uses less CPU and network bandwidth.
+          </p>
+          {result.profiles.map((profile) => (
+            <div
+              key={profile.token}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-edge bg-panelalt p-2"
+            >
+              <div>
+                <p className="text-sm font-medium">{profile.name}</p>
+                <p className="text-xs text-muted">
+                  {[profile.encoding, profile.width && profile.height ? `${profile.width}×${profile.height}` : '', profile.fps ? `${profile.fps} fps` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              </div>
+              <button
+                className="btn btn-primary px-3 py-1 text-xs"
+                disabled={busy !== null}
+                onClick={() => add(profile)}
+              >
+                {busy === profile.token ? 'Adding…' : 'Add this stream'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CameraFields({
   draft,
   update,
+  onReload,
 }: {
   draft: SettingsType['cameras'];
   update: (patch: Record<string, unknown>) => void;
+  onReload: () => void;
 }) {
   const sources = draft.sources ?? [];
 
@@ -754,6 +987,8 @@ function CameraFields({
 
   return (
     <>
+      <CameraDiscoveryPanel onAdded={onReload} />
+
       <div className="md:col-span-2">
         <SelectField
           label="Primary camera (detection & calibration)"

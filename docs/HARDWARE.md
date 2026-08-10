@@ -1,18 +1,19 @@
 # Hardware notes
 
 Nothing in this repository depends on final hardware choices. Every pin, ratio,
-and limit is configuration. This file records what the firmware expects and
-what still has to be filled in.
+and limit is configuration. This file records the firmware defaults and what
+must be verified against the actual build.
 
-## Fill these in before flashing
+## Verify these before flashing
 
-`firmware/include/board_config.h` contains **placeholder GPIO numbers** guarded
-by `TURRET_PINS_CONFIGURED`. The firmware refuses to build unless you either
-set that flag in `platformio.ini` (`-D TURRET_PINS_CONFIGURED=1`) or override
-the pins there. This is deliberate: a wrong step/dir pin can drive a stepper
-into a hard stop on first boot.
+`firmware/include/board_config.h` contains a concrete pin assignment for a
+classic 38-pin ESP32 DevKit/WROOM-32. The `esp32dev` build enables it with
+`TURRET_PINS_CONFIGURED`, but these are defaults rather than knowledge of the
+physical wiring. Verify every signal before flashing. If the wiring changes,
+remove that build flag until the assignments have been checked again; a wrong
+step/direction pin can drive a stepper into a hard stop on first boot.
 
-Pins to assign:
+Pins to verify:
 
 | Signal              | Macro                     |
 | ------------------- | ------------------------- |
@@ -78,7 +79,16 @@ reset in this design; size the supply for the solenoid inrush.
 
 ## Camera
 
-Any RTSP source. Tested targets: UniFi Protect G5 Turret, Reolink Duo WiFi.
+Any RTSP source works. **Settings → Camera → Discover cameras** uses ONVIF
+WS-Discovery to find local cameras, authenticate, list their profiles and
+obtain the correct manufacturer-specific RTSP URI. ONVIF is used only during
+onboarding; frame transport and decoding remain RTSP, so it adds no ongoing
+video-processing overhead.
+
+WS-Discovery is link-local multicast and normally does not cross a router or
+VLAN. Put the server on the camera LAN/VLAN for automatic discovery, or enter
+the camera's ONVIF device-service URL manually. Routing and firewall rules must
+still allow the server to reach the ONVIF and RTSP ports.
 
 * UniFi Protect: enable the RTSP stream per channel in Protect, then use
   `rtsp://<nvr-ip>:7447/<stream-key>`. Prefer the *low* or *medium* substream
@@ -87,5 +97,7 @@ Any RTSP source. Tested targets: UniFi Protect G5 Turret, Reolink Duo WiFi.
 * Reolink: `rtsp://<user>:<pass>@<ip>:554/h264Preview_01_sub` (substream) or
   `..._main`. The Duo's two lenses appear as separate channels.
 
-Put the password in the environment file and reference it in the URL as
-`${CAM_PASSWORD}` — see `server/.env.example`.
+The guided flow stores camera credentials in the protected data directory and
+keeps them out of the URL and database. Manual RTSP entries can still use an
+environment placeholder such as `${CAM_PASSWORD}` — see `server/.env.example`.
+An empty URL or the `Simulated` backend keeps the animated balcony feed.

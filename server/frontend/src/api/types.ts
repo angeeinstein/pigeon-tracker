@@ -188,6 +188,39 @@ export interface CameraConfig {
   stall_timeout_s: number;
 }
 
+export interface OnvifDevice {
+  host: string;
+  port: number;
+  xaddr: string;
+  xaddrs: string[];
+  name: string;
+  hardware: string;
+  location: string;
+  types: string[];
+}
+
+export interface OnvifProfile {
+  token: string;
+  name: string;
+  uri: string;
+  encoding: string;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export interface OnvifProfileResult {
+  device: {
+    manufacturer: string;
+    model: string;
+    firmware: string;
+    serial_number: string;
+    host: string;
+    xaddr: string;
+  };
+  profiles: OnvifProfile[];
+}
+
 export interface Settings {
   cameras: { sources: CameraConfig[]; primary_id: string };
   detector: {

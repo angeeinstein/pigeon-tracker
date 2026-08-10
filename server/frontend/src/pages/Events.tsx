@@ -71,7 +71,7 @@ export default function Events() {
       <Card title={`Events (${merged.length})`}>
         {history.loading && <Spinner />}
         {history.error && <Banner>{history.error}</Banner>}
-        <div className="max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70vh] overflow-auto">
           <table className="w-full text-sm">
             <tbody>
               {merged.map((event, index) => (

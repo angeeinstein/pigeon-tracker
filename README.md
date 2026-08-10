@@ -26,12 +26,12 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 | Part                                                 | State                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 163 tests pass; running on a real LXC          |
-| Web UI (React + TypeScript + Vite + Tailwind)         | Builds and is served; **not yet reviewed in a browser** |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 166 tests pass; running on a real LXC          |
+| Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
 | YOLO detection                                        | Model loads and runs (73 ms/frame on 2 vCPU, CPU-only)  |
 | Controller simulator                                  | Working; drove the full engagement sequence             |
-| ESP32 firmware (ESP-IDF/PlatformIO)                   | Written; **not yet compiled or flashed**                |
+| ESP32 firmware (ESP-IDF/PlatformIO)                   | Builds cleanly; **not yet flashed or commissioned**     |
 
 Verified end to end on a 2-vCPU / 1 GB Ubuntu 24.04 container: fresh install →
 frontend build → service up and enabled → controller link with token auth →
@@ -89,9 +89,14 @@ systemctl restart turret-control
 ## First run
 
 1. Open `http://<lxc-ip>:8080/`.
-2. **Settings → Camera**: add the RTSP URL. Put the password in
-   `/etc/turret-control/turret.env` and reference it as `${CAM_PASSWORD}` in
-   the URL, so it never lands in the database.
+2. **Settings → Camera**: click **Discover cameras**, select an ONVIF device,
+   enter its camera account, choose a stream profile, and add it. ONVIF obtains
+   the manufacturer's RTSP URL; the live video still uses RTSP directly. Camera
+   credentials are stored in `/var/lib/turret-control/camera_credentials.json`
+   (0600), separately from SQLite, and are never returned by the API. If the
+   server and cameras are on different subnets, enter the ONVIF device-service
+   URL manually. The built-in simulated balcony remains available by choosing
+   the `Simulated` backend or leaving a camera URL empty.
 3. **Flash the ESP32** (`firmware/README.md`) with the controller token the
    installer printed. It connects on its own and appears on the dashboard.
 4. **Home** the turret, then **Calibration**: click a spot in the image, jog
@@ -132,8 +137,9 @@ can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
 a hard burst limit — enough to exercise every state the server can enter.
 
 ```bash
-pytest                                   # 163 tests, ~1 s
+pytest                                   # 174 tests, ~1 s
 ruff check app tools tests && ruff format --check app tools tests
+mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current
 ```
 

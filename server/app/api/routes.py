@@ -7,6 +7,7 @@ model, so malformed input is rejected before it reaches the runtime.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Literal
 
@@ -16,9 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import SESSION_COOKIE, check_credentials, create_token
 from app.api.deps import AuthDep, ConfigDep, RuntimeDep
+from app.camera.onvif import (
+    OnvifError,
+    discover_onvif,
+    fetch_onvif_profiles,
+    validate_private_device_url,
+)
 from app.services import event_log as ev
 from app.services.settings import SettingsError
-from app.services.settings_schema import SECTION_MODELS
+from app.services.settings_schema import SECTION_MODELS, CameraConfig
 from app.targeting.zones import ZoneType
 from app.turret.models import TurretError
 from app.version import version_info
@@ -603,11 +610,11 @@ async def goto_preset(preset_id: int, runtime: RuntimeDep, _auth: AuthDep) -> di
     from app.database.db import run_db
     from app.database.models import Preset
 
-    preset = await run_db(
-        lambda session: (
-            session.get(Preset, preset_id).as_dict() if session.get(Preset, preset_id) else None
-        )
-    )
+    def _get(session: Any) -> dict[str, Any] | None:
+        preset = session.get(Preset, preset_id)
+        return preset.as_dict() if preset is not None else None
+
+    preset = await run_db(_get)
     if preset is None:
         raise HTTPException(status_code=404, detail="preset not found")
     try:
@@ -656,6 +663,139 @@ async def get_snapshot(name: str, runtime: RuntimeDep, _auth: AuthDep) -> FileRe
 @router.get("/cameras")
 async def cameras(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     return runtime.cameras.status_dict()
+
+
+class OnvifProfilesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    xaddr: str = Field(max_length=1024)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=256)
+
+
+class CameraOnboardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    role: Literal["overview", "turret", "aux"] = "overview"
+    uri: str = Field(max_length=1024)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=256)
+    make_primary: bool = True
+
+
+class CameraCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(default="", max_length=128)
+    # null means preserve the current password; an empty string deliberately clears it.
+    password: str | None = Field(default=None, max_length=256)
+
+
+@router.post("/cameras/discover")
+async def cameras_discover(
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+    timeout_s: int = Query(default=4, ge=1, le=10),
+) -> dict[str, Any]:
+    try:
+        devices = await asyncio.to_thread(discover_onvif, timeout_s)
+    except OnvifError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "devices": devices,
+        "note": (
+            "WS-Discovery only reaches the server's local network segment; "
+            "enter a device service URL manually when cameras are on another subnet."
+        ),
+    }
+
+
+@router.post("/cameras/onvif/profiles")
+async def camera_onvif_profiles(
+    payload: OnvifProfilesRequest, runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            fetch_onvif_profiles, payload.xaddr, payload.username, payload.password
+        )
+    except OnvifError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/cameras/onboard", status_code=status.HTTP_201_CREATED)
+async def camera_onboard(
+    payload: CameraOnboardRequest, runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, Any]:
+    if runtime.settings.cameras.get(payload.id) is not None:
+        raise HTTPException(status_code=409, detail=f"camera id already exists: {payload.id}")
+    if len(runtime.settings.cameras.sources) >= 8:
+        raise HTTPException(status_code=409, detail="at most 8 camera sources are supported")
+    try:
+        await asyncio.to_thread(validate_private_device_url, payload.uri, {"rtsp", "rtsps"})
+        camera = CameraConfig(
+            id=payload.id,
+            name=payload.name,
+            url=payload.uri,
+            enabled=True,
+            role=payload.role,
+        )
+    except (OnvifError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    previous = runtime.camera_credentials.get(payload.id)
+    if payload.username or payload.password:
+        runtime.camera_credentials.set(payload.id, payload.username, payload.password)
+    sources = [item.model_dump(mode="json") for item in runtime.settings.cameras.sources]
+    sources.append(camera.model_dump(mode="json"))
+    patch: dict[str, Any] = {"sources": sources}
+    if payload.make_primary:
+        patch["primary_id"] = payload.id
+    try:
+        updated = await runtime.settings_store.update_section("cameras", patch)
+    except SettingsError as exc:
+        if previous is None:
+            runtime.camera_credentials.remove(payload.id)
+        else:
+            runtime.camera_credentials.set(payload.id, previous.username, previous.password)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.events.emit(
+        ev.CAT_SYSTEM,
+        "camera added via ONVIF",
+        data={"camera_id": payload.id, "role": payload.role},
+    )
+    return updated.model_dump(mode="json")
+
+
+@router.get("/cameras/credentials")
+async def camera_credentials(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
+    return runtime.camera_credentials.status()
+
+
+@router.put("/cameras/{camera_id}/credentials")
+async def update_camera_credentials(
+    camera_id: str,
+    payload: CameraCredentialRequest,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, Any]:
+    if runtime.settings.cameras.get(camera_id) is None:
+        raise HTTPException(status_code=404, detail="camera not found")
+    try:
+        runtime.camera_credentials.set(camera_id, payload.username, payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.cameras.restart(camera_id)
+    return runtime.camera_credentials.status(camera_id)
+
+
+@router.delete("/cameras/{camera_id}/credentials")
+async def delete_camera_credentials(
+    camera_id: str, runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, Any]:
+    if runtime.settings.cameras.get(camera_id) is None:
+        raise HTTPException(status_code=404, detail="camera not found")
+    runtime.camera_credentials.remove(camera_id)
+    await runtime.cameras.restart(camera_id)
+    return runtime.camera_credentials.status(camera_id)
 
 
 @router.get("/camera/snapshot.jpg")

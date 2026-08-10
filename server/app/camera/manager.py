@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from app.camera.base import CameraSource, CameraStatus, Frame
+from app.camera.credentials import CameraCredentials, CameraCredentialStore
 from app.camera.rtsp import RtspCameraSource
 from app.camera.simulated import SimulatedCameraSource
 from app.logging_config import get_logger
@@ -14,7 +15,12 @@ from app.services.settings_schema import CameraConfig, CamerasSettings
 log = get_logger(__name__)
 
 
-def create_source(config: CameraConfig, *, force_simulated: bool = False) -> CameraSource:
+def create_source(
+    config: CameraConfig,
+    *,
+    force_simulated: bool = False,
+    credentials: CameraCredentials | None = None,
+) -> CameraSource:
     """Build the source implementation for a camera configuration.
 
     A camera with no URL falls back to the simulated source instead of failing:
@@ -23,14 +29,20 @@ def create_source(config: CameraConfig, *, force_simulated: bool = False) -> Cam
     """
     if force_simulated or config.backend == "simulated" or not config.url.strip():
         return SimulatedCameraSource(config)
-    return RtspCameraSource(config)
+    return RtspCameraSource(config, credentials)
 
 
 class CameraManager:
-    def __init__(self, *, force_simulated: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        force_simulated: bool = False,
+        credential_store: CameraCredentialStore | None = None,
+    ) -> None:
         self._sources: dict[str, CameraSource] = {}
         self._settings = CamerasSettings()
         self._force_simulated = force_simulated
+        self._credential_store = credential_store
         self._lock = asyncio.Lock()
 
     # -- lifecycle -------------------------------------------------------
@@ -54,9 +66,32 @@ class CameraManager:
                     continue
                 if existing is not None:
                     await self._stop_source(camera_id)
-                source = create_source(config, force_simulated=self._force_simulated)
+                credentials = (
+                    self._credential_store.get(camera_id) if self._credential_store else None
+                )
+                source = create_source(
+                    config,
+                    force_simulated=self._force_simulated,
+                    credentials=credentials,
+                )
                 await asyncio.to_thread(source.start)
                 self._sources[camera_id] = source
+
+    async def restart(self, camera_id: str) -> None:
+        """Restart one source after its protected credentials change."""
+        async with self._lock:
+            config = self._settings.get(camera_id)
+            if config is None or not config.enabled:
+                return
+            await self._stop_source(camera_id)
+            credentials = self._credential_store.get(camera_id) if self._credential_store else None
+            source = create_source(
+                config,
+                force_simulated=self._force_simulated,
+                credentials=credentials,
+            )
+            await asyncio.to_thread(source.start)
+            self._sources[camera_id] = source
 
     async def stop_all(self) -> None:
         async with self._lock:

@@ -10,6 +10,8 @@ import type {
   CalibrationPoint,
   EventRecord,
   Health,
+  OnvifDevice,
+  OnvifProfileResult,
   Preset,
   Settings,
   SettingsSection,
@@ -151,6 +153,21 @@ export const api = {
   },
   eventCategories: () => request<string[]>('/api/events/categories'),
   cameras: () => request<{ primary_id: string; connected: boolean; cameras: unknown[] }>('/api/cameras'),
+  discoverCameras: (timeout_s = 4) =>
+    post<{ devices: OnvifDevice[]; note: string }>(
+      `/api/cameras/discover?timeout_s=${timeout_s}`,
+    ),
+  onvifProfiles: (body: { xaddr: string; username: string; password: string }) =>
+    post<OnvifProfileResult>('/api/cameras/onvif/profiles', body),
+  onboardCamera: (body: {
+    id: string;
+    name: string;
+    role: 'overview' | 'turret' | 'aux';
+    uri: string;
+    username: string;
+    password: string;
+    make_primary: boolean;
+  }) => post<Settings['cameras']>('/api/cameras/onboard', body),
 };
 
 /** WebSocket URL for the current origin (works behind a reverse proxy). */

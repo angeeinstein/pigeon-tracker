@@ -104,6 +104,7 @@ class TurretState:
         return None if self.updated_at is None else time.monotonic() - self.updated_at
 
     def as_dict(self) -> dict[str, Any]:
+        status_age_s = self.age_s()
         return {
             "pan_deg": round(self.pan_deg, 3),
             "tilt_deg": round(self.tilt_deg, 3),
@@ -124,7 +125,7 @@ class TurretState:
             },
             "state": self.state,
             "error": self.error,
-            "status_age_s": round(self.age_s(), 2) if self.age_s() is not None else None,
+            "status_age_s": round(status_age_s, 2) if status_age_s is not None else None,
         }
 
 
