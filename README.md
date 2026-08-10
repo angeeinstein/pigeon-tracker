@@ -70,7 +70,10 @@ installs and starts the systemd unit, and verifies `/api/health`.
 
 Existing configuration, calibration, zones and events are **never** overwritten
 by an update; they are backed up to `/var/backups/turret-control` first, and a
-failed update rolls the code back to the previous commit.
+failed update rolls the code back to the previous commit. Before declaring an
+update complete, the installer exercises the health, version, authentication
+and OpenAPI endpoints, verifies that the running commit matches the checkout,
+and fetches the web application plus one of its built assets.
 
 | Path                        | Contents                                  |
 | --------------------------- | ----------------------------------------- |

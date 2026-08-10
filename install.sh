@@ -474,6 +474,103 @@ wait_for_health() {
     return 1
 }
 
+verify_http_endpoints() {
+    step "Checking application endpoints"
+    local base_url="http://127.0.0.1:${HTTP_PORT}"
+    local health version auth openapi root expected_commit actual_commit asset_path
+
+    health="$(curl -fsS --max-time 5 "${base_url}/api/health")" || {
+        warn "GET /api/health failed"
+        return 1
+    }
+    jq -e '
+        (.status == "ok" or .status == "degraded") and
+        (.checks.database == true) and
+        (.version.server_version | type == "string") and
+        (.version.protocol_version | type == "number")
+    ' <<<"${health}" >/dev/null || {
+        warn "/api/health returned an invalid payload or an unhealthy database"
+        return 1
+    }
+    ok "GET /api/health returned valid runtime and database status"
+
+    version="$(curl -fsS --max-time 5 "${base_url}/api/version")" || {
+        warn "GET /api/version failed"
+        return 1
+    }
+    jq -e '
+        (.server_version | type == "string") and
+        (.server_version | length > 0) and
+        (.protocol_version | type == "number") and
+        (.git_commit | type == "string") and
+        (.git_commit | length > 0)
+    ' <<<"${version}" >/dev/null || {
+        warn "/api/version returned an invalid payload"
+        return 1
+    }
+    expected_commit="$(git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    actual_commit="$(jq -r '.git_commit' <<<"${version}")"
+    if [[ "${expected_commit}" != "unknown" && "${actual_commit}" != "${expected_commit}" ]]; then
+        warn "running server reports commit ${actual_commit}, expected ${expected_commit}"
+        return 1
+    fi
+    ok "GET /api/version reports deployed commit ${actual_commit}"
+
+    auth="$(curl -fsS --max-time 5 "${base_url}/api/auth/me")" || {
+        warn "GET /api/auth/me failed"
+        return 1
+    }
+    jq -e '
+        (.auth_enabled | type == "boolean") and
+        (.authenticated | type == "boolean")
+    ' <<<"${auth}" >/dev/null || {
+        warn "/api/auth/me returned an invalid payload"
+        return 1
+    }
+    ok "GET /api/auth/me returned valid authentication state"
+
+    openapi="$(curl -fsS --max-time 5 "${base_url}/openapi.json")" || {
+        warn "GET /openapi.json failed"
+        return 1
+    }
+    jq -e '
+        .paths["/api/health"].get and
+        .paths["/api/version"].get and
+        .paths["/api/cameras/discover"].post
+    ' <<<"${openapi}" >/dev/null || {
+        warn "OpenAPI schema is missing required server endpoints"
+        return 1
+    }
+    ok "GET /openapi.json contains the required API routes"
+
+    root="$(curl -fsS --max-time 5 "${base_url}/")" || {
+        warn "GET / failed"
+        return 1
+    }
+    grep -Eqi '<!doctype html|<html' <<<"${root}" || {
+        warn "GET / did not return an HTML page"
+        return 1
+    }
+    if [[ -f "${SERVER_DIR}/app/static/index.html" ]]; then
+        grep -q 'id="root"' <<<"${root}" || {
+            warn "web root did not return the built React application"
+            return 1
+        }
+        asset_path="$(grep -Eo '(src|href)="/assets/[^"]+"' <<<"${root}" | head -n 1 | cut -d'"' -f2 || true)"
+        [[ -n "${asset_path}" ]] || {
+            warn "built web page references no frontend asset"
+            return 1
+        }
+        curl -fsS --max-time 5 -o /dev/null "${base_url}${asset_path}" || {
+            warn "frontend asset is not reachable: ${asset_path}"
+            return 1
+        }
+        ok "GET / served the React application and ${asset_path}"
+    else
+        ok "GET / returned the server placeholder page (no built frontend present)"
+    fi
+}
+
 show_status() {
     systemctl status "${SERVICE_NAME}" --no-pager --lines 15 || true
     echo
@@ -535,6 +632,7 @@ do_install() {
     install_service
     restart_service
     wait_for_health
+    verify_http_endpoints
     summary
 }
 
@@ -551,6 +649,7 @@ do_update() {
     install_service
     restart_service
     wait_for_health
+    verify_http_endpoints
     ok "update complete"
     summary
 }
@@ -567,6 +666,7 @@ do_repair() {
     install_service
     restart_service
     wait_for_health
+    verify_http_endpoints
     ok "repair complete"
 }
 
@@ -644,7 +744,7 @@ main() {
                    do_update ;;
         repair)    is_installed || die "nothing to repair - run without flags to install"
                    do_repair ;;
-        restart)   restart_service; wait_for_health ;;
+        restart)   restart_service; wait_for_health; verify_http_endpoints ;;
         status)    show_status ;;
         uninstall) do_uninstall ;;
         *)         die "unknown mode: ${MODE}" ;;
