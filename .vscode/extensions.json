@@ -1,0 +1,10 @@
+{
+  // Suggested when opening the repository. PlatformIO ships its own Python
+  // and PlatformIO Core, so nothing else is needed to build the firmware.
+  "recommendations": [
+    "platformio.platformio-ide",
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "esbenp.prettier-vscode"
+  ]
+}

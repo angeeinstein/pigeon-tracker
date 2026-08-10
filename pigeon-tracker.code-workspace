@@ -1,0 +1,56 @@
+{
+  // Multi-root workspace: PlatformIO only activates when it finds a
+  // platformio.ini in a workspace ROOT folder, and ours lives in firmware/.
+  // Listing firmware/ as its own root makes the extension pick it up while
+  // keeping the server and docs in the same window.
+  //
+  // Open with: File > Open Workspace from File... > pigeon-tracker.code-workspace
+  "folders": [
+    {
+      "name": "pigeon-tracker",
+      "path": "."
+    },
+    {
+      "name": "firmware (PlatformIO)",
+      "path": "firmware"
+    }
+  ],
+  "settings": {
+    "files.eol": "\n",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+
+    // The generated protocol header is written by
+    // server/tools/gen_protocol_header.py - edit the Python, not the header.
+    "files.readonlyInclude": {
+      "firmware/include/protocol_generated.h": true
+    },
+
+    "python.analysis.extraPaths": ["server"],
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["server/tests"],
+
+    "[python]": {
+      "editor.defaultFormatter": "charliermarsh.ruff",
+      "editor.formatOnSave": true
+    },
+    "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[typescriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+
+    // PlatformIO manages its own IntelliSense for the firmware; stop the C/C++
+    // extension from fighting it with a half-configured include path.
+    "C_Cpp.default.configurationProvider": "platformio.platformio-ide"
+  },
+  "extensions": {
+    "recommendations": [
+      "platformio.platformio-ide",
+      "ms-python.python",
+      "charliermarsh.ruff",
+      "esbenp.prettier-vscode"
+    ]
+  }
+}

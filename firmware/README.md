@@ -27,6 +27,21 @@ homing, and the valve's hard timeout.
    `include/secrets.h` is git-ignored. The token must match
    `TURRET_CONTROLLER_TOKEN` in the server's environment file.
 
+## Opening it in VS Code
+
+The PlatformIO extension only activates when `platformio.ini` sits in a
+**workspace root folder**, and this one lives in `firmware/`. So either:
+
+* open `firmware/` directly as the VS Code folder, or
+* open `pigeon-tracker.code-workspace` from the repository root — it lists
+  `firmware/` as a second root, so PlatformIO activates while the server code
+  stays in the same window.
+
+Install the **PlatformIO IDE** extension (`platformio.platformio-ide`). It
+brings its own Python and PlatformIO Core; nothing else is needed. The first
+build downloads the Xtensa toolchain and ESP-IDF — expect a gigabyte or two and
+several minutes.
+
 ## Build and flash
 
 ```bash
@@ -35,6 +50,18 @@ pio run -t upload       # flash
 pio device monitor      # serial log (115200)
 pio run -t menuconfig    # ESP-IDF configuration
 ```
+
+From the repository root, add `-d firmware` to any of those.
+
+**The first build fails on purpose** until you have done the two steps above:
+
+```
+#error "GPIO assignments in include/board_config.h are placeholders..."
+```
+
+To get it compiling: fill in the pins, uncomment `-DTURRET_PINS_CONFIGURED=1`
+in the `[env:esp32dev]` section of `platformio.ini`, and copy
+`include/secrets.example.h` to `include/secrets.h`.
 
 Managed components (`esp_websocket_client`) are fetched automatically from the
 ESP Component Registry on the first build — see `src/idf_component.yml`.
