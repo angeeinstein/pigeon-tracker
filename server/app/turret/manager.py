@@ -107,6 +107,7 @@ class TurretManager:
 
     def status_dict(self) -> dict[str, Any]:
         return {
+            "mode": self.settings.mode,
             "link": self.link.value,
             "connected": self.connected,
             "ready": self.ready,

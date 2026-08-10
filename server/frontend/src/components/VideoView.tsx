@@ -110,6 +110,16 @@ export default function VideoView({
 
         {telemetry?.turret_point && (
           <g stroke="#f5a524" strokeWidth={0.003} fill="none">
+            {telemetry.controller_simulated && (
+              <rect
+                x={telemetry.turret_point[0] - 0.04}
+                y={telemetry.turret_point[1] - 0.04}
+                width={0.08}
+                height={0.08}
+                rx={0.008}
+                strokeDasharray="0.012 0.008"
+              />
+            )}
             <circle cx={telemetry.turret_point[0]} cy={telemetry.turret_point[1]} r={0.025} />
             <line
               x1={telemetry.turret_point[0] - 0.04}

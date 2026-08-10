@@ -397,7 +397,7 @@ class CalibrationPointUpdate(BaseModel):
 async def list_calibration_points(
     runtime: RuntimeDep, _auth: AuthDep, camera_id: str | None = None
 ) -> list[dict[str, Any]]:
-    return await runtime.calibration.list_points(camera_id)
+    return await runtime.calibration.list_points(runtime.calibration_camera_id(camera_id))
 
 
 @router.post("/calibration/points", status_code=201)
@@ -417,7 +417,7 @@ async def create_calibration_point(
         tilt = runtime.turret.state.tilt_deg if tilt is None else tilt
 
     created = await runtime.calibration.add_point(
-        camera_id=camera_id,
+        camera_id=runtime.calibration_camera_id(camera_id),
         cam_x=payload.x,
         cam_y=payload.y,
         pan_deg=pan,
@@ -455,7 +455,7 @@ async def delete_calibration_point(point_id: int, runtime: RuntimeDep, _auth: Au
 async def clear_calibration_points(
     runtime: RuntimeDep, _auth: AuthDep, camera_id: str | None = None
 ) -> dict[str, int]:
-    removed = await runtime.calibration.clear(camera_id)
+    removed = await runtime.calibration.clear(runtime.calibration_camera_id(camera_id))
     await runtime.events.emit(
         ev.CAT_TARGETING, "calibration cleared", level="warning", data={"removed": removed}
     )
@@ -466,7 +466,7 @@ async def clear_calibration_points(
 async def calibration_model(
     runtime: RuntimeDep, _auth: AuthDep, camera_id: str | None = None
 ) -> dict[str, Any]:
-    return runtime.calibration.describe(camera_id or runtime.settings.cameras.primary_id)
+    return runtime.calibration_description(camera_id)
 
 
 @router.get("/calibration/solve")

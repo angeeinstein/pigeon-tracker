@@ -44,6 +44,8 @@ export interface Telemetry {
   spray_enabled: boolean;
   camera_connected: boolean;
   controller_connected: boolean;
+  controller_mode: 'physical' | 'simulated';
+  controller_simulated: boolean;
   controller_fault: string | null;
   pan_deg: number;
   tilt_deg: number;
@@ -150,6 +152,7 @@ export interface Health {
   system_state: string;
   camera: { primary_id: string; connected: boolean; cameras: CameraStatus[] };
   controller: {
+    mode: 'physical' | 'simulated';
     link: string;
     connected: boolean;
     ready: boolean;
@@ -260,6 +263,7 @@ export interface Settings {
     auto_home_on_connect: boolean;
   };
   controller: {
+    mode: 'physical' | 'simulated';
     controller_id: string;
     status_timeout_s: number;
     command_timeout_s: number;

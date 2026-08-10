@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ from app.targeting.target_selector import SelectionResult, TargetSelector
 from app.targeting.zones import ZoneService
 from app.turret.manager import TurretManager
 from app.turret.models import TurretError
+from app.turret.simulator import SimulatedController
 from app.version import version_info
 from app.vision.overlays import render_overlay
 from app.vision.pipeline import VisionPipeline
@@ -75,6 +77,7 @@ class Runtime:
         self.spray_guard = SprayGuard(settings.spray)
         self.state_machine = TargetingStateMachine(settings.targeting, self.spray_guard)
         self.turret = TurretManager(settings.controller, settings.motion)
+        self.simulated_controller: SimulatedController | None = None
 
         #: System-level arm. Automatic engagement and water output both
         #: require it; it is never restored automatically on restart.
@@ -109,6 +112,7 @@ class Runtime:
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
             asyncio.create_task(self._maintenance_loop(), name="maintenance"),
         ]
+        await self._sync_controller_mode()
         await self.events.emit(
             ev.CAT_SYSTEM, "server started", data={"version": version_info()["server_version"]}
         )
@@ -128,6 +132,7 @@ class Runtime:
                 await self.turret.arm_output(False)
             with contextlib.suppress(Exception):
                 await self.turret.stop(emergency=False)
+        await self._stop_simulated_controller(notify=False)
 
         await self.vision.stop()
         await self.cameras.stop_all()
@@ -153,10 +158,36 @@ class Runtime:
                     await self.turret.arm_output(False)
         if changed & {"controller", "motion"}:
             self.turret.update_settings(settings.controller, settings.motion)
+        if "controller" in changed:
+            await self._sync_controller_mode()
 
     @property
     def settings(self) -> AppSettings:
         return self.settings_store.current
+
+    async def _sync_controller_mode(self) -> None:
+        if self.settings.controller.mode == "simulated":
+            if self.simulated_controller is not None:
+                if self.turret.info.controller_id == self.settings.controller.controller_id:
+                    return
+                await self._stop_simulated_controller(notify=False)
+            simulator = SimulatedController(self.turret)
+            self.simulated_controller = simulator
+            if await simulator.start():
+                await self.on_controller_connected()
+            else:
+                self.simulated_controller = None
+        else:
+            await self._stop_simulated_controller()
+
+    async def _stop_simulated_controller(self, *, notify: bool = True) -> None:
+        simulator = self.simulated_controller
+        if simulator is None:
+            return
+        self.simulated_controller = None
+        detached = await simulator.stop()
+        if detached and notify:
+            await self.on_controller_disconnected()
 
     # ------------------------------------------------------------------
     # controller events
@@ -338,8 +369,27 @@ class Runtime:
     ) -> AimSolution | None:
         camera = camera_id or self.settings.cameras.primary_id
         return self.calibration.solve(
-            camera, x, y, zones=self.zones.for_camera(camera), surface=surface
+            self.calibration_camera_id(camera),
+            x,
+            y,
+            zones=self.zones.for_camera(camera),
+            surface=surface,
         )
+
+    def calibration_camera_id(self, camera_id: str | None = None) -> str:
+        """Storage key for the active physical/simulated calibration profile."""
+        camera = camera_id or self.settings.cameras.primary_id
+        if self.settings.controller.mode != "simulated":
+            return camera
+        digest = hashlib.sha256(camera.encode("utf-8")).hexdigest()[:10]
+        return f"sim-{digest}-{camera[:49]}"[:64]
+
+    def calibration_description(self, camera_id: str | None = None) -> dict[str, Any]:
+        camera = camera_id or self.settings.cameras.primary_id
+        result = self.calibration.describe(self.calibration_camera_id(camera))
+        result["camera_id"] = camera
+        result["controller_mode"] = self.settings.controller.mode
+        return result
 
     async def aim_at_image_point(
         self,
@@ -374,6 +424,10 @@ class Runtime:
         camera = self.settings.cameras.primary_id
         if not self.turret.connected:
             return None
+        if self.simulated_controller is not None:
+            return self.simulated_controller.image_point(
+                self.turret.state.pan_deg, self.turret.state.tilt_deg
+            )
         return self.calibration.angles_to_image(
             camera, self.turret.state.pan_deg, self.turret.state.tilt_deg
         )
@@ -421,6 +475,7 @@ class Runtime:
         # is armed, and which state the *automatic* machine is in. Label them,
         # and put the safety-relevant one first.
         return [
+            f"{'SIMULATED   ' if self.simulated_controller else ''}"
             f"{'ARMED' if self.armed else 'SAFE'}   AUTO {self.state_machine.state.value}",
             f"pan {turret.pan_deg:7.2f}  tilt {turret.tilt_deg:7.2f}"
             f"{'  MOVING' if turret.moving else ''}",
@@ -467,7 +522,11 @@ class Runtime:
                 result.frame_height,
                 zones,
                 lambda x, y, surface: self.calibration.solve(
-                    camera, x, y, zones=zones, surface=surface
+                    self.calibration_camera_id(camera),
+                    x,
+                    y,
+                    zones=zones,
+                    surface=surface,
                 ),
                 now=time.time(),
             )
@@ -597,6 +656,8 @@ class Runtime:
             "spray_enabled": self.settings.spray.enabled,
             "camera_connected": self.cameras.any_connected,
             "controller_connected": self.turret.connected,
+            "controller_mode": self.settings.controller.mode,
+            "controller_simulated": bool(self.turret.info.hardware.get("simulated")),
             "controller_fault": self.turret.fault_reason(),
             "pan_deg": round(turret.pan_deg, 3),
             "tilt_deg": round(turret.tilt_deg, 3),
@@ -652,7 +713,7 @@ class Runtime:
             "controller": self.turret.status_dict(),
             "vision": vision,
             "database": database,
-            "calibration": self.calibration.describe(self.settings.cameras.primary_id),
+            "calibration": self.calibration_description(),
             "telemetry_clients": self.telemetry.client_count,
         }
 

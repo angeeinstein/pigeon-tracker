@@ -202,6 +202,10 @@ class ControllerHardwareConfig(BaseModel):
 class ControllerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    #: Use the in-process ESP32/turret emulator while the mechanics are absent.
+    #: Physical remains the safe default so an upgrade never silently swaps a
+    #: real controller for a simulated one.
+    mode: Literal["physical", "simulated"] = "physical"
     #: Expected controller id; a mismatch is logged and surfaced in the UI.
     controller_id: str = Field(default="turret-1", max_length=64)
     #: Link is considered dead without a status frame for this long.

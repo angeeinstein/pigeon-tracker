@@ -68,7 +68,7 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
     'Home automatically when the controller connects': 'auto_home_on_connect',
   },
   controller: {
-    'Controller id': 'controller_id', 'Status timeout': 'status_timeout_s',
+    'Controller mode': 'mode', 'Controller id': 'controller_id', 'Status timeout': 'status_timeout_s',
     'Command timeout': 'command_timeout_s', 'Homing timeout': 'home_timeout_s',
     'Ping interval': 'ping_interval_s', 'Push configuration on connect': 'push_config_on_connect',
     'Motor steps per revolution': 'hardware.steps_per_rev', 'Pan microsteps': 'hardware.pan_microsteps',
@@ -609,6 +609,18 @@ function Fields({
       const num = (key: string) => Number(hardware[key] ?? 0);
       return (
         <>
+          <div className="md:col-span-2">
+            <SelectField
+              label="Controller mode"
+              value={value.mode}
+              options={[
+                { value: 'physical', label: 'Physical ESP32' },
+                { value: 'simulated', label: 'Simulated turret' },
+              ]}
+              onChange={(v) => update({ mode: v })}
+              hint="Simulated mode exercises the normal controller protocol, joystick, calibration, targeting and spray state without physical hardware."
+            />
+          </div>
           <TextField
             label="Controller id"
             value={value.controller_id}

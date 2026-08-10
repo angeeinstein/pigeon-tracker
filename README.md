@@ -26,12 +26,12 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 | Part                                                 | State                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 179 tests pass; running on a real LXC          |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 180 tests pass; running on a real LXC          |
 | Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
 | YOLO detection                                        | Model loads and runs (73 ms/frame on 2 vCPU, CPU-only)  |
-| Controller simulator                                  | Working; drove the full engagement sequence             |
-| ESP32 firmware (ESP-IDF/PlatformIO)                   | Builds cleanly; **not yet flashed or commissioned**     |
+| In-process controller simulator                       | Selectable in Settings; shown on the live camera feed   |
+| ESP32 firmware (ESP-IDF/PlatformIO)                   | Builds, flashes and connects; mechanics not commissioned |
 
 Verified end to end on a 2-vCPU / 1 GB Ubuntu 24.04 container: fresh install →
 frontend build → service up and enabled → controller link with token auth →
@@ -110,8 +110,13 @@ systemctl restart turret-control
    server and cameras are on different subnets, enter the ONVIF device-service
    URL manually. The built-in simulated balcony remains available by choosing
    the `Simulated` backend or leaving a camera URL empty.
-3. **Flash the ESP32** (`firmware/README.md`) with the controller token the
-   installer printed. It connects on its own and appears on the dashboard.
+3. Before the mechanics exist, choose **Settings → Controller → Simulated
+   turret** and save. The server starts a virtual ESP32 using the normal
+   controller protocol; home it and the amber box on the real camera feed
+   becomes the virtual nozzle. Joystick, presets, limits, calibration,
+   automatic targeting, arming and simulated spray all use the production
+   paths. Simulator calibration is stored separately from physical calibration.
+   Later, select **Physical ESP32**; the flashed controller reconnects itself.
 4. **Home** the turret, then **Calibration**: click a spot in the image, jog
    the nozzle onto that spot in reality, save. Repeat — a dozen points spread
    over the balcony is plenty. Tag them by surface (railing / planter / floor)
@@ -145,12 +150,13 @@ python tools/controller_sim.py --url ws://127.0.0.1:8080/ws/hardware
 cd frontend && npm install && npm run dev
 ```
 
-The simulator models acceleration-limited motion, homing that takes time (and
-can be made to fail with `--fail-homing`), soft limits, arming, and a valve with
-a hard burst limit — enough to exercise every state the server can enter.
+The Settings-based simulator models acceleration-limited motion, homing, jog
+expiry, soft limits, emergency stop, arming, configuration and a timed virtual
+valve. The command-line simulator remains useful for network-protocol tests and
+failure injection such as `--fail-homing`.
 
 ```bash
-pytest                                   # 179 tests, ~1 s
+pytest                                   # 180 tests, ~2 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current

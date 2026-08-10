@@ -350,6 +350,60 @@ class TestControllerHandshake:
             ws.receive_json()
 
 
+class TestSimulatedController:
+    def test_full_control_path_and_calibration_are_isolated(self, client: TestClient) -> None:
+        enabled = client.patch("/api/settings/controller", json={"mode": "simulated"})
+        assert enabled.status_code == 200
+        try:
+            status = client.get("/api/control/status").json()
+            assert status["controller_connected"] is True
+            assert status["controller_simulated"] is True
+            assert status["turret_point"] == pytest.approx([0.5, 0.5], abs=0.01)
+
+            homed = client.post("/api/control/home", json={"axes": "both"})
+            assert homed.status_code == 200
+            assert homed.json()["homed"] is True
+
+            moved = client.post(
+                "/api/control/move_relative",
+                json={"pan_delta_deg": 10, "tilt_delta_deg": 5},
+            )
+            assert moved.status_code == 200
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                status = client.get("/api/control/status").json()
+                if not status["moving"]:
+                    break
+                time.sleep(0.03)
+            assert status["pan_deg"] == pytest.approx(10, abs=0.1)
+            assert status["tilt_deg"] == pytest.approx(5, abs=0.1)
+            assert status["turret_point"][0] > 0.5
+            assert status["turret_point"][1] < 0.5
+
+            jogged = client.post("/api/control/jog", json={"pan": 0.4, "tilt": -0.2})
+            assert jogged.status_code == 200
+            assert client.get("/api/control/status").json()["moving"] is True
+            time.sleep(0.55)
+            assert client.get("/api/control/status").json()["moving"] is False
+
+            point = client.post(
+                "/api/calibration/points",
+                json={"x": 0.6, "y": 0.4, "surface": "default"},
+            )
+            assert point.status_code == 201
+            assert point.json()["camera_id"].startswith("sim-")
+            assert len(client.get("/api/calibration/points").json()) == 1
+            assert client.delete("/api/calibration/points").json()["removed"] == 1
+        finally:
+            disabled = client.patch("/api/settings/controller", json={"mode": "physical"})
+            assert disabled.status_code == 200
+
+        status = client.get("/api/control/status").json()
+        assert status["controller_connected"] is False
+        assert status["controller_mode"] == "physical"
+        assert client.get("/api/calibration/points").json() == []
+
+
 class TestFrontendFallback:
     def test_unknown_api_route_is_404(self, client: TestClient) -> None:
         assert client.get("/api/does-not-exist").status_code == 404

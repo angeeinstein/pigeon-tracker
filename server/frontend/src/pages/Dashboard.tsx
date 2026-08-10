@@ -57,6 +57,12 @@ export default function Dashboard() {
         {telemetry?.controller_fault && (
           <Banner tone="warn">Controller: {telemetry.controller_fault}</Banner>
         )}
+        {telemetry?.controller_simulated && (
+          <Banner tone="info">
+            Simulated turret active. The amber box is the virtual nozzle position; all commands
+            still use the normal controller and safety paths.
+          </Banner>
+        )}
         {telemetry?.estop && (
           <Banner tone="bad">
             Emergency stop is latched. Clear it, then re-home before moving.{' '}
@@ -180,7 +186,9 @@ export default function Dashboard() {
         <Card title="Status">
           <div className="mb-3 flex flex-wrap gap-2">
             <Pill tone={telemetry?.camera_connected ? 'good' : 'bad'}>camera</Pill>
-            <Pill tone={connected ? 'good' : 'bad'}>controller</Pill>
+            <Pill tone={connected ? 'good' : 'bad'}>
+              {telemetry?.controller_simulated ? 'simulated turret' : 'controller'}
+            </Pill>
             <Pill tone={telemetry?.detection_enabled ? 'good' : 'idle'}>AI</Pill>
             <Pill tone={telemetry?.homed ? 'good' : 'warn'}>
               {telemetry?.homed ? 'homed' : 'not homed'}

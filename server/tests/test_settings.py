@@ -26,6 +26,7 @@ class TestDefaults:
         settings = AppSettings()
         assert settings.spray.enabled is False, "water must be off out of the box"
         assert settings.targeting.auto_enabled is False
+        assert settings.controller.mode == "physical"
         assert settings.controller.hardware.allow_unhomed_motion is False
 
     def test_motion_limits_are_validated(self) -> None:

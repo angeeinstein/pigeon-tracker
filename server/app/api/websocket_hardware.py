@@ -51,6 +51,10 @@ async def hardware_socket(websocket: WebSocket) -> None:
     attached = False
     post_connect: asyncio.Task[None] | None = None
 
+    if runtime.settings.controller.mode == "simulated":
+        await adapter.close(proto.CLOSE_REPLACED, "simulated controller mode is enabled")
+        return
+
     try:
         # --- handshake ---------------------------------------------------
         try:

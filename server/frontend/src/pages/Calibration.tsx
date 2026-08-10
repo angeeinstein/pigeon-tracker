@@ -58,6 +58,12 @@ export default function Calibration() {
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="space-y-4">
+        {telemetry?.controller_simulated && (
+          <Banner tone="info">
+            Simulator calibration is stored separately from physical-turret calibration. Move the
+            amber virtual-nozzle box onto each selected point, just as you would aim the real nozzle.
+          </Banner>
+        )}
         {!homed && (
           <Banner tone="warn">
             The turret is not homed. Calibration points saved now would record angles that do not

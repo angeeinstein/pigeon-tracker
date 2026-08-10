@@ -66,9 +66,16 @@ event loop stays responsive; the ML runtimes release the GIL during inference.
    move, verify, spray, or back off.
 4. **Command** — `TurretManager` serialises commands, matches acks to command
    ids with futures, tracks link health, and holds the last known hardware
-   status.
+   status. In simulated mode an in-process virtual ESP32 implements that same
+   connection interface and protocol; no REST, targeting, calibration or
+   safety path bypasses `TurretManager`.
 5. **Telemetry** — `TelemetryHub` fans a merged snapshot out to browser
    WebSocket clients at a fixed rate; REST handles configuration.
+
+Simulator calibration uses a separate storage namespace per camera. Its amber
+nozzle marker comes from simulator ground-truth geometry rather than the fitted
+model, so calibration errors remain visible and physical-turret measurements
+stay untouched when switching modes.
 
 ## Extension points
 

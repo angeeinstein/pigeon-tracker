@@ -76,6 +76,7 @@ export default function System() {
       </Card>
 
       <Card title="Controller link">
+        <StatusRow label="Mode" value={controller.mode} />
         <StatusRow label="Link" value={controller.link} />
         <StatusRow label="Controller id" value={controller.controller.controller_id || '—'} />
         <StatusRow label="Round trip" value={controller.rtt_ms ? `${controller.rtt_ms} ms` : '—'} />
