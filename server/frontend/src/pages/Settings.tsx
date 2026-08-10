@@ -111,11 +111,6 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
   },
 };
 
-const CAMERA_TEMPLATE_FIELDS = new Set([
-  'role', 'backend', 'transport', 'latency_ms', 'target_width', 'reconnect_delay_s',
-  'stall_timeout_s', 'enabled',
-]);
-
 function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -146,6 +141,7 @@ type FieldContextValue = {
   draft: unknown;
   defaults: unknown;
   prefix: string;
+  cameraSource?: boolean;
   resetValue: (path: string, value: unknown) => void;
 };
 
@@ -160,15 +156,9 @@ function useSettingAdornment(label: string) {
   const savedValue = getPath(context.saved, path);
   let defaultValue = getPath(context.defaults, path);
   let canFactoryReset = true;
-  if (context.section === 'cameras' && /^sources\.\d+\.(id|name|url)$/.test(path)) {
+  if (context.cameraSource && /^(id|name|url)$/.test(path)) {
     defaultValue = undefined;
     canFactoryReset = false;
-  }
-  if (defaultValue === undefined && context.section === 'cameras') {
-    const match = path.match(/^sources\.\d+\.(.+)$/);
-    if (match && CAMERA_TEMPLATE_FIELDS.has(match[1])) {
-      defaultValue = getPath(context.defaults, `sources.0.${match[1]}`);
-    }
   }
   if (context.section === 'cameras' && path === 'primary_id') {
     const sourceIds = ((context.draft as SettingsType['cameras']).sources ?? []).map(
@@ -1251,6 +1241,15 @@ function CameraFields({
     update({ sources: next });
   };
 
+  const removeSource = (index: number) => {
+    const removed = sources[index];
+    const remaining = sources.filter((_, candidate) => candidate !== index);
+    update({
+      sources: remaining,
+      ...(draft.primary_id === removed.id ? { primary_id: remaining[0]?.id ?? '' } : {}),
+    });
+  };
+
   const addSource = () => {
     const id = `camera${sources.length + 1}`;
     update({
@@ -1287,14 +1286,14 @@ function CameraFields({
       </div>
 
       {sources.map((source, index) => (
-        <FieldPrefix key={`${index}-${source.id}`} prefix={`sources.${index}.`}>
+        <CameraFieldScope key={`${index}-${source.id}`} source={source} index={index}>
         <div className="md:col-span-2 mt-3 rounded-lg border border-edge p-3">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-medium">{source.name || source.id}</h3>
             {sources.length > 1 && (
               <button
                 className="btn px-2 py-0.5 text-xs"
-                onClick={() => update({ sources: sources.filter((_, i) => i !== index) })}
+                onClick={() => removeSource(index)}
               >
                 Remove
               </button>
@@ -1374,7 +1373,7 @@ function CameraFields({
             />
           </div>
         </div>
-        </FieldPrefix>
+        </CameraFieldScope>
       ))}
 
       <div className="md:col-span-2 mt-3">
@@ -1386,8 +1385,38 @@ function CameraFields({
   );
 }
 
-function FieldPrefix({ prefix, children }: { prefix: string; children: ReactNode }) {
+function CameraFieldScope({
+  source,
+  index,
+  children,
+}: {
+  source: CameraConfig;
+  index: number;
+  children: ReactNode;
+}) {
   const context = useContext(FieldContext);
   if (!context) return children;
-  return <FieldContext.Provider value={{ ...context, prefix }}>{children}</FieldContext.Provider>;
+  const savedCameras = context.saved as SettingsType['cameras'];
+  const defaultCameras = context.defaults as SettingsType['cameras'];
+  const savedSource =
+    savedCameras.sources.find((candidate) => candidate.id === source.id) ??
+    savedCameras.sources.find(
+      (candidate) => candidate.url === source.url && candidate.name === source.name,
+    ) ??
+    savedCameras.sources[index];
+  return (
+    <FieldContext.Provider
+      value={{
+        ...context,
+        saved: savedSource ?? {},
+        draft: source,
+        defaults: defaultCameras.sources[0] ?? {},
+        prefix: '',
+        cameraSource: true,
+        resetValue: (path, value) => context.resetValue(`sources.${index}.${path}`, value),
+      }}
+    >
+      {children}
+    </FieldContext.Provider>
+  );
 }

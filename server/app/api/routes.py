@@ -763,8 +763,6 @@ async def camera_onboard(
 ) -> dict[str, Any]:
     if runtime.settings.cameras.get(payload.id) is not None:
         raise HTTPException(status_code=409, detail=f"camera id already exists: {payload.id}")
-    if len(runtime.settings.cameras.sources) >= 8:
-        raise HTTPException(status_code=409, detail="at most 8 camera sources are supported")
     try:
         await asyncio.to_thread(validate_private_device_url, payload.uri, {"rtsp", "rtsps"})
         camera = CameraConfig(
@@ -777,11 +775,18 @@ async def camera_onboard(
     except (OnvifError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    factory_source = CameraConfig().model_dump(mode="json")
+    sources = [
+        item.model_dump(mode="json")
+        for item in runtime.settings.cameras.sources
+        if item.model_dump(mode="json") != factory_source
+    ]
+    if len(sources) >= 8:
+        raise HTTPException(status_code=409, detail="at most 8 camera sources are supported")
+    sources.append(camera.model_dump(mode="json"))
     previous = runtime.camera_credentials.get(payload.id)
     if payload.username or payload.password:
         runtime.camera_credentials.set(payload.id, payload.username, payload.password)
-    sources = [item.model_dump(mode="json") for item in runtime.settings.cameras.sources]
-    sources.append(camera.model_dump(mode="json"))
     patch: dict[str, Any] = {"sources": sources}
     if payload.make_primary:
         patch["primary_id"] = payload.id

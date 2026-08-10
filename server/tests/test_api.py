@@ -166,6 +166,7 @@ class TestCameraOnboarding:
         )
         assert response.status_code == 201
         assert "very-secret" not in response.text
+        assert [source["id"] for source in response.json()["sources"]] == ["test-camera"]
         status = client.get("/api/cameras/credentials").json()["test-camera"]
         assert status == {"camera_id": "test-camera", "configured": True, "username": "viewer"}
 
