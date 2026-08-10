@@ -6,16 +6,14 @@ homing, and the valve's hard timeout.
 
 ## Before you build
 
-1. **Assign the pins.** `include/board_config.h` ships placeholders and the
-   build fails until you acknowledge them:
+1. **Check the pins.** `include/board_config.h` carries a working set for a
+   standard ESP32 DevKit, and `env:esp32dev` builds with them. They are still
+   only defaults: confirm each one against your wiring before you flash. A
+   wrong STEP pin is not a compile error, it is a stepper driving into a hard
+   stop on first boot.
 
-   ```
-   #error "GPIO assignments in include/board_config.h are placeholders..."
-   ```
-
-   Fill in the real numbers, then uncomment `-DTURRET_PINS_CONFIGURED=1` in
-   `platformio.ini`. This is intentional friction — a wrong STEP pin is a
-   mechanical failure, not a compile error.
+   If you rewire, comment `-DTURRET_PINS_CONFIGURED=1` out of `platformio.ini`
+   so the build stops with the `#error` until you have re-checked.
 
 2. **Add credentials.**
 
@@ -53,15 +51,27 @@ pio run -t menuconfig    # ESP-IDF configuration
 
 From the repository root, add `-d firmware` to any of those.
 
-**The first build fails on purpose** until you have done the two steps above:
+### Verified build
+
+`env:esp32dev` compiles clean against ESP-IDF 5.5 (PlatformIO espressif32
+6.12), with pins assigned for a standard ESP32 DevKit:
 
 ```
-#error "GPIO assignments in include/board_config.h are placeholders..."
+RAM:   11.1% (36 424 / 327 680 bytes)
+Flash: 29.6% (929 927 / 3 145 728 bytes)
 ```
 
-To get it compiling: fill in the pins, uncomment `-DTURRET_PINS_CONFIGURED=1`
-in the `[env:esp32dev]` section of `platformio.ini`, and copy
-`include/secrets.example.h` to `include/secrets.h`.
+The 3 MB comes from `partitions.csv`; on the default 1 MB single-app table
+this firmware sits at 89 % before you have added anything.
+
+**Check `include/board_config.h` against your own wiring before flashing.**
+The defaults avoid the ESP32's traps (input-only pins without pull-ups for
+endstops, strapping pins for outputs) but they cannot know what you soldered.
+If you rewire, comment `-DTURRET_PINS_CONFIGURED=1` out again in
+`platformio.ini` so the build stops until you have re-checked.
+
+`env:esp32-s3` is still guarded on purpose: those pin numbers are wrong for an
+S3, where GPIO 26-32 belong to the flash/PSRAM on most modules.
 
 Managed components (`esp_websocket_client`) are fetched automatically from the
 ESP Component Registry on the first build — see `src/idf_component.yml`.

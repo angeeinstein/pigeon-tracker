@@ -1,5 +1,11 @@
 # Defaults applied on a fresh build. Adjust with `pio run -t menuconfig`.
 
+# The ESP-IDF default is 2 MB, which does not match a standard 4 MB DevKit and
+# makes the build warn about it. Change this if your module has more or less.
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_FREERTOS_HZ=1000
 

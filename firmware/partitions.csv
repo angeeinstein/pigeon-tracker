@@ -1,0 +1,15 @@
+# Partition table: single application, no OTA, 4 MB flash.
+#
+# The default single-app table gives the application 1 MB, and this firmware
+# already fills ~89 % of that — ESP-IDF's Wi-Fi and TLS stacks are most of it.
+# 3 MB leaves room to grow (TMC UART control, a second axis pair, TLS to the
+# server) without another partition change.
+#
+# No OTA slot on purpose: the controller is flashed over USB, and an OTA pair
+# would halve the space available to the app for a feature this project does
+# not have. Adding OTA later means moving to two 1.5 MB app slots.
+#
+# Name,     Type, SubType, Offset,   Size,      Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+phy_init,   data, phy,     0xe000,   0x1000,
+factory,    app,  factory, 0x10000,  0x300000,
