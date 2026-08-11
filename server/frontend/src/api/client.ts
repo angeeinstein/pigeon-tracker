@@ -11,6 +11,7 @@ import type {
   CameraStatus,
   DetectionCapture,
   DetectionReviewStatus,
+  DetectorCatalog,
   EventRecord,
   Health,
   OnvifDevice,
@@ -86,6 +87,7 @@ const post = <T>(path: string, body?: unknown, timeoutMs?: number) =>
 export const api = {
   health: () => request<Health>('/api/health'),
   system: () => request<Record<string, unknown>>('/api/system'),
+  detectorCatalog: () => request<DetectorCatalog>('/api/detector/catalog'),
 
   // --- auth ---------------------------------------------------------
   me: () =>

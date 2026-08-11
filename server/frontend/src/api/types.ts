@@ -202,6 +202,29 @@ export interface Health {
   telemetry_clients: number;
 }
 
+export interface DetectorCatalog {
+  backend: string;
+  loaded: boolean;
+  device: string;
+  model: string;
+  classes: string[];
+  available_classes: string[];
+  configured_backend: string;
+  configured_model: string;
+  active_backend: string | null;
+  active_model: string | null;
+  catalog_current: boolean;
+  reload_pending: boolean;
+  reload_error: string | null;
+  error: string | null;
+  validation_available: boolean;
+  configured_classes: string[];
+  configured_target_classes: string[];
+  invalid_detector_classes: string[];
+  invalid_target_classes: string[];
+  target_classes_excluded_by_detector: string[];
+}
+
 /** Settings sections. Kept loose where the UI only round-trips values. */
 export interface CameraConfig {
   id: string;

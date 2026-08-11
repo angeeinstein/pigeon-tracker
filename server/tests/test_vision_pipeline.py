@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from app.services.settings_schema import AppSettings
+from app.vision.detector import DetectorStatus
 from app.vision.pipeline import VisionPipeline, VisionResult
 
 
@@ -75,3 +76,53 @@ def test_camera_change_clears_result_and_tracker_state() -> None:
     assert pipeline.latest is None
     assert pipeline._last_frame_seq == -1
     reset.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_detector_replacement_keeps_working_model() -> None:
+    pipeline = make_pipeline(frame_ts=time.monotonic())
+    working = Mock()
+    working.settings = pipeline._settings.detector.model_copy(deep=True)
+    working.status = DetectorStatus(backend="yolo", loaded=True, classes=["bird", "person"])
+    pipeline._detector = working
+    pipeline._settings.detector.model_path = "broken.pt"
+    pipeline._reload.set()
+
+    candidate = Mock()
+    candidate.load.side_effect = RuntimeError("bad weights")
+    candidate.status = DetectorStatus(backend="yolo", loaded=False)
+
+    with patch("app.vision.pipeline.create_detector", return_value=candidate):
+        await pipeline._ensure_detector()
+
+    assert pipeline._detector is working
+    working.close.assert_not_called()
+    candidate.close.assert_called_once()
+    assert "bad weights" in pipeline.status()["detector"]["reload_error"]
+
+
+@pytest.mark.asyncio
+async def test_successful_detector_replacement_is_swapped_atomically() -> None:
+    pipeline = make_pipeline(frame_ts=time.monotonic())
+    previous = Mock()
+    previous.settings = pipeline._settings.detector.model_copy(deep=True)
+    previous.status = DetectorStatus(backend="yolo", loaded=True, classes=["bird"])
+    pipeline._detector = previous
+    pipeline._settings.detector.model_path = "replacement.pt"
+    pipeline._reload.set()
+
+    candidate = Mock()
+    candidate.settings = pipeline._settings.detector.model_copy(deep=True)
+    candidate.status = DetectorStatus(
+        backend="yolo", loaded=True, model="replacement.pt", classes=["pigeon"]
+    )
+
+    with patch("app.vision.pipeline.create_detector", return_value=candidate):
+        await pipeline._ensure_detector()
+
+    assert pipeline._detector is candidate
+    previous.close.assert_called_once()
+    status = pipeline.status()["detector"]
+    assert status["classes"] == ["pigeon"]
+    assert status["catalog_current"] is True
+    assert status["reload_error"] is None

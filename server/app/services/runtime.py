@@ -823,6 +823,43 @@ class Runtime:
             "telemetry_clients": self.telemetry.client_count,
         }
 
+    def detector_catalog(self) -> dict[str, Any]:
+        """Describe the active model vocabulary and configuration conflicts."""
+        status = dict(self.vision.status()["detector"])
+        available = [str(name) for name in status.get("classes", [])]
+        validation_available = bool(status.get("catalog_current") and status.get("loaded"))
+        known = {name.casefold() for name in available}
+        detector_classes = list(self.settings.detector.classes)
+        target_classes = list(self.settings.targeting.target_classes)
+        detector_filter = {name.casefold() for name in detector_classes}
+
+        invalid_detector = (
+            [name for name in detector_classes if name.casefold() not in known]
+            if validation_available
+            else []
+        )
+        invalid_target = (
+            [name for name in target_classes if name.casefold() not in known]
+            if validation_available
+            else []
+        )
+        excluded_targets = (
+            [name for name in target_classes if name.casefold() not in detector_filter]
+            if detector_filter
+            else []
+        )
+
+        return {
+            **status,
+            "available_classes": available,
+            "validation_available": validation_available,
+            "configured_classes": detector_classes,
+            "configured_target_classes": target_classes,
+            "invalid_detector_classes": invalid_detector,
+            "invalid_target_classes": invalid_target,
+            "target_classes_excluded_by_detector": excluded_targets,
+        }
+
     def system_info(self) -> dict[str, Any]:
         from app.vision.yolo_detector import gpu_info
 

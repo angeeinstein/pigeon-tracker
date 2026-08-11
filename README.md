@@ -131,7 +131,9 @@ systemctl restart turret-control
    default. The capture threshold keeps uncertain proposals for review without
    allowing them into tracking. Existing installations retain their saved
    device and input-size values during updates, so change those two fields
-   explicitly if they were previously `auto` / 640.
+   explicitly if they were previously `auto` / 640. Class selectors use the
+   vocabulary reported by the active model and flag names that the model does
+   not provide; changing models preserves the selection for explicit review.
 7. **Detections**: review the raw evidence frames, confirm useful bird examples,
    reject false positives, or save the current frame manually when a visible
    bird was missed. Confirmed training images are protected from automatic

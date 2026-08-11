@@ -105,6 +105,33 @@ class TestSettings:
         payload = client.get("/api/settings-schema").json()
         assert "properties" in payload["spray"]
 
+    def test_detector_catalog_reports_model_classes_and_filter_conflicts(
+        self, client: TestClient
+    ) -> None:
+        original = client.get("/api/settings").json()
+        try:
+            response = client.patch(
+                "/api/settings",
+                json={
+                    "detector": {**original["detector"], "classes": ["bird", "dragon"]},
+                    "targeting": {**original["targeting"], "target_classes": ["person"]},
+                },
+            )
+            assert response.status_code == 200
+
+            catalog = client.get("/api/detector/catalog")
+            assert catalog.status_code == 200
+            payload = catalog.json()
+            assert payload["available_classes"] == ["bird"]
+            assert payload["invalid_detector_classes"] == ["dragon"]
+            assert payload["invalid_target_classes"] == ["person"]
+            assert payload["target_classes_excluded_by_detector"] == ["person"]
+        finally:
+            client.patch(
+                "/api/settings",
+                json={"detector": original["detector"], "targeting": original["targeting"]},
+            )
+
 
 class TestCameraOnboarding:
     def test_discovery_and_profiles_do_not_echo_password(

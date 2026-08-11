@@ -79,6 +79,7 @@ class DetectorStatus:
             "loaded": self.loaded,
             "device": self.device,
             "model": self.model,
+            "classes": list(self.classes),
             "last_inference_ms": round(self.last_inference_ms, 1),
             "inferences": self.inferences,
             "error": self.error,

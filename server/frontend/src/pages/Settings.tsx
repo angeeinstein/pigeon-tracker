@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useState,
   type ComponentProps,
   type Dispatch,
@@ -11,6 +12,7 @@ import {
 import { api } from '../api/client';
 import type {
   CameraConfig,
+  DetectorCatalog,
   OnvifDevice,
   OnvifProfile,
   OnvifProfileResult,
@@ -246,40 +248,178 @@ function TextField(props: ComponentProps<typeof BaseTextField>) {
   return <BaseTextField {...props} {...useSettingAdornment(props.label)} />;
 }
 
-function ClassListField({
+function ModelClassField({
   label,
   value,
   onChange,
+  availableClasses,
+  suggestionClasses = availableClasses,
+  validationAvailable,
+  excludedClasses = [],
+  allLabel,
   hint,
 }: {
   label: string;
   value: string[];
   onChange: (value: string[]) => void;
+  availableClasses: string[];
+  suggestionClasses?: string[];
+  validationAvailable: boolean;
+  excludedClasses?: string[];
+  allLabel: string;
   hint?: string;
 }) {
-  const canonical = value.join(', ');
-  const [text, setText] = useState(canonical);
+  const listId = useId();
+  const [entry, setEntry] = useState('');
+  const availableByKey = new Map(
+    availableClasses.map((className) => [className.toLocaleLowerCase(), className]),
+  );
+  const selectedKeys = new Set(value.map((className) => className.toLocaleLowerCase()));
+  const invalidKeys = new Set(
+    validationAvailable
+      ? value
+          .filter((className) => !availableByKey.has(className.toLocaleLowerCase()))
+          .map((className) => className.toLocaleLowerCase())
+      : [],
+  );
+  const excludedKeys = new Set(excludedClasses.map((name) => name.toLocaleLowerCase()));
+  const invalid = value.filter((name) => invalidKeys.has(name.toLocaleLowerCase()));
 
-  // Keep trailing separators in the input while the user is typing. The
-  // previous implementation immediately converted "bird," to ["bird"] and
-  // rendered it back as "bird", making a second class impossible to enter.
-  useEffect(() => setText(canonical), [canonical]);
+  const add = (rawEntries: string[]) => {
+    const next = [...value];
+    const keys = new Set(selectedKeys);
+    for (const raw of rawEntries) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      const canonical = availableByKey.get(trimmed.toLocaleLowerCase()) ?? trimmed;
+      const key = canonical.toLocaleLowerCase();
+      if (!keys.has(key)) {
+        next.push(canonical);
+        keys.add(key);
+      }
+    }
+    if (!same(next, value)) onChange(next);
+  };
+
+  const commitEntry = () => {
+    add(entry.split(','));
+    setEntry('');
+  };
 
   return (
-    <TextField
-      label={label}
-      value={text}
-      onChange={(next) => {
-        setText(next);
-        onChange(
-          next
-            .split(',')
-            .map((entry) => entry.trim())
-            .filter(Boolean),
-        );
-      }}
-      hint={hint}
-    />
+    <div className="py-1.5">
+      <TextField
+        label={label}
+        value={entry}
+        list={listId}
+        placeholder="Search or type a class, then press Enter"
+        onChange={(next) => {
+          if (next.includes(',')) {
+            const parts = next.split(',');
+            setEntry(parts.pop() ?? '');
+            add(parts);
+          } else {
+            setEntry(next);
+          }
+        }}
+        onBlur={commitEntry}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ',') {
+            event.preventDefault();
+            commitEntry();
+          }
+        }}
+      />
+      <datalist id={listId}>
+        {suggestionClasses
+          .filter((className) => !selectedKeys.has(className.toLocaleLowerCase()))
+          .map((className) => (
+            <option key={className} value={className} />
+          ))}
+      </datalist>
+
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          className={`pill ${value.length === 0 ? 'border-accent/60 bg-accent/15 text-ink' : 'border-edge text-muted'}`}
+          onClick={() => onChange([])}
+        >
+          {allLabel}
+        </button>
+        {value.map((className) => {
+          const key = className.toLocaleLowerCase();
+          const bad = invalidKeys.has(key) || excludedKeys.has(key);
+          return (
+            <button
+              type="button"
+              key={key}
+              className={`pill ${bad ? 'border-bad/60 bg-bad/15 text-bad' : 'border-edge text-ink'}`}
+              title={`Remove ${className}`}
+              onClick={() => onChange(value.filter((item) => item.toLocaleLowerCase() !== key))}
+            >
+              {className} &times;
+            </button>
+          );
+        })}
+      </div>
+
+      {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
+      {invalid.length > 0 && (
+        <span className="mt-1 block text-xs text-bad">
+          Not present in the loaded model: {invalid.join(', ')}
+        </span>
+      )}
+      {excludedClasses.length > 0 && (
+        <span className="mt-1 block text-xs text-bad">
+          Excluded by the AI class filter: {excludedClasses.join(', ')}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DetectorModelStatus({
+  catalog,
+  draft,
+  error,
+}: {
+  catalog: DetectorCatalog | null;
+  draft: SettingsType['detector'];
+  error: string | null;
+}) {
+  if (error)
+    return (
+      <div className="md:col-span-2">
+        <Banner>{error}</Banner>
+      </div>
+    );
+  if (!catalog) {
+    return <p className="py-2 text-xs text-muted md:col-span-2">Loading model classes...</p>;
+  }
+  const draftMatchesConfigured =
+    draft.backend === catalog.configured_backend && draft.model_path === catalog.configured_model;
+  const waiting = !catalog.reload_error && (catalog.reload_pending || !catalog.catalog_current);
+
+  return (
+    <div className="mb-2 rounded-lg border border-edge bg-panelalt/40 px-3 py-2 text-xs text-muted md:col-span-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill tone={catalog.loaded ? (catalog.reload_error ? 'warn' : 'good') : 'bad'}>
+          {waiting ? 'model loading' : catalog.loaded ? 'model loaded' : 'model unavailable'}
+        </Pill>
+        <span>{(catalog.active_model ?? catalog.model) || 'no active model'}</span>
+        <span>- {catalog.available_classes.length} classes</span>
+      </div>
+      {!draftMatchesConfigured && (
+        <p className="mt-1 text-warn">
+          Suggestions belong to the active model. Save the model change to load its vocabulary.
+        </p>
+      )}
+      {catalog.reload_error && (
+        <p className="mt-1 text-bad">
+          {catalog.reload_error}. The previous working model remains active.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -306,6 +446,7 @@ export default function Settings() {
     const [values, defaults] = await Promise.all([api.settings(), api.settingsDefaults()]);
     return { values, defaults };
   }, []);
+  const catalog = useAsync(() => api.detectorCatalog(), []);
   const [tab, setTab] = useState<SectionName>('cameras');
   const [saved, setSaved] = useState<SettingsType | null>(null);
   const [draft, setDraft] = useState<SettingsType | null>(null);
@@ -318,6 +459,18 @@ export default function Settings() {
       setDraft(clone(loaded.data.values));
     }
   }, [loaded.data, saved]);
+
+  useEffect(() => {
+    const info = catalog.data;
+    if (
+      !info ||
+      (info.reload_error && !info.reload_pending) ||
+      (info.catalog_current && !info.reload_pending)
+    )
+      return;
+    const timer = window.setTimeout(() => catalog.reload(), 750);
+    return () => window.clearTimeout(timer);
+  }, [catalog.data]);
 
   if (loaded.loading) return <Spinner />;
   if (loaded.error || !loaded.data) return <Banner>{loaded.error ?? 'no settings'}</Banner>;
@@ -342,6 +495,9 @@ export default function Settings() {
       const updated = await api.patchAllSettings(patch);
       setSaved(clone(updated));
       setDraft(clone(updated));
+      if (dirtySections.includes('detector') || dirtySections.includes('targeting')) {
+        catalog.reload();
+      }
       notify('All settings saved', 'good');
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), 'bad');
@@ -423,6 +579,8 @@ export default function Settings() {
         saved={saved}
         draft={draft}
         defaults={defaults}
+        detectorCatalog={catalog.data}
+        detectorCatalogError={catalog.error}
         update={(patch) => updateSection(tab, patch)}
         setDraft={setDraft}
         onCameraAdded={cameraAdded}
@@ -436,6 +594,8 @@ function SectionEditor({
   saved,
   draft,
   defaults,
+  detectorCatalog,
+  detectorCatalogError,
   update,
   setDraft,
   onCameraAdded,
@@ -444,6 +604,8 @@ function SectionEditor({
   saved: SettingsType;
   draft: SettingsType;
   defaults: SettingsType;
+  detectorCatalog: DetectorCatalog | null;
+  detectorCatalogError: string | null;
   update: (patch: Record<string, unknown>) => void;
   setDraft: Dispatch<SetStateAction<SettingsType | null>>;
   onCameraAdded: (cameras: SettingsType['cameras']) => void;
@@ -476,7 +638,15 @@ function SectionEditor({
           {SECTION_DESCRIPTIONS[section]}
         </p>
         <div className="grid gap-x-6 md:grid-cols-2">
-          <Fields section={section} draft={draft[section]} update={update} onCameraAdded={onCameraAdded} />
+          <Fields
+            section={section}
+            draft={draft[section]}
+            allSettingsDraft={draft}
+            detectorCatalog={detectorCatalog}
+            detectorCatalogError={detectorCatalogError}
+            update={update}
+            onCameraAdded={onCameraAdded}
+          />
         </div>
       </FieldContext.Provider>
     </Card>
@@ -486,11 +656,17 @@ function SectionEditor({
 function Fields({
   section,
   draft,
+  allSettingsDraft,
+  detectorCatalog,
+  detectorCatalogError,
   update,
   onCameraAdded,
 }: {
   section: SectionName;
   draft: unknown;
+  allSettingsDraft: SettingsType;
+  detectorCatalog: DetectorCatalog | null;
+  detectorCatalogError: string | null;
   update: (patch: Record<string, unknown>) => void;
   onCameraAdded: (cameras: SettingsType['cameras']) => void;
 }) {
@@ -505,8 +681,18 @@ function Fields({
       );
     case 'detector': {
       const value = draft as SettingsType['detector'];
+      const catalogMatchesDraft = Boolean(
+        detectorCatalog?.validation_available &&
+        detectorCatalog.configured_backend === value.backend &&
+        detectorCatalog.configured_model === value.model_path,
+      );
       return (
         <>
+          <DetectorModelStatus
+            catalog={detectorCatalog}
+            draft={value}
+            error={detectorCatalogError}
+          />
           <Toggle
             label="Detection enabled"
             checked={value.enabled}
@@ -602,11 +788,14 @@ function Fields({
             onChange={(v) => update({ input_size: v })}
             hint="960 preserves more detail for small birds in a wide camera view, at higher CPU cost."
           />
-          <ClassListField
+          <ModelClassField
             label="Classes"
             value={value.classes}
             onChange={(v) => update({ classes: v })}
-            hint="Comma separated. Empty keeps every class the model produces."
+            availableClasses={detectorCatalog?.available_classes ?? []}
+            validationAvailable={catalogMatchesDraft}
+            allLabel="All model classes"
+            hint="Only selected classes enter evidence capture and tracking. Unknown names remain visible as warnings."
           />
           <Toggle
             label="Half precision (CUDA only)"
@@ -942,6 +1131,20 @@ function Fields({
     }
     case 'targeting': {
       const value = draft as SettingsType['targeting'];
+      const detectorSettings = allSettingsDraft.detector;
+      const detectorFilter = new Set(
+        detectorSettings.classes.map((className) => className.toLocaleLowerCase()),
+      );
+      const excludedTargets = detectorFilter.size
+        ? value.target_classes.filter(
+            (className) => !detectorFilter.has(className.toLocaleLowerCase()),
+          )
+        : [];
+      const catalogMatchesDraft = Boolean(
+        detectorCatalog?.validation_available &&
+        detectorCatalog.configured_backend === detectorSettings.backend &&
+        detectorCatalog.configured_model === detectorSettings.model_path,
+      );
       return (
         <>
           <Toggle
@@ -949,10 +1152,20 @@ function Fields({
             checked={value.auto_enabled}
             onChange={(v) => update({ auto_enabled: v })}
           />
-          <ClassListField
+          <ModelClassField
             label="Target classes"
             value={value.target_classes}
             onChange={(v) => update({ target_classes: v })}
+            availableClasses={detectorCatalog?.available_classes ?? []}
+            suggestionClasses={
+              detectorSettings.classes.length > 0
+                ? detectorSettings.classes
+                : (detectorCatalog?.available_classes ?? [])
+            }
+            validationAvailable={catalogMatchesDraft}
+            excludedClasses={excludedTargets}
+            allLabel="All detected classes"
+            hint="Targets must also be allowed by the AI class filter."
           />
           <NumberField
             label="Minimum confidence"

@@ -1,6 +1,6 @@
 /** Small shared UI primitives. */
 
-import { useId, type ReactNode } from 'react';
+import { useId, type KeyboardEventHandler, type ReactNode } from 'react';
 
 export type SettingStatus = 'unsaved' | 'saved';
 
@@ -233,6 +233,9 @@ export function TextField({
   placeholder,
   type = 'text',
   autoComplete,
+  list,
+  onBlur,
+  onKeyDown,
   error,
   settingStatus,
   onSettingReset,
@@ -245,6 +248,9 @@ export function TextField({
   placeholder?: string;
   type?: string;
   autoComplete?: string;
+  list?: string;
+  onBlur?: () => void;
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   error?: string;
 } & SettingAdornment) {
   const id = useId();
@@ -258,6 +264,9 @@ export function TextField({
         value={value}
         placeholder={placeholder}
         autoComplete={autoComplete}
+        list={list}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
         onChange={(event) => onChange(event.target.value)}
       />
       {error ? (

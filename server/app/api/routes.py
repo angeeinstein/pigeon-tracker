@@ -62,6 +62,12 @@ async def system(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     return runtime.system_info()
 
 
+@router.get("/detector/catalog")
+async def detector_catalog(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
+    """Loaded model classes plus warnings for incompatible saved filters."""
+    return runtime.detector_catalog()
+
+
 # ==========================================================================
 # auth
 # ==========================================================================

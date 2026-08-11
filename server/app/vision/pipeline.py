@@ -88,6 +88,8 @@ class VisionPipeline:
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._reload = asyncio.Event()
+        self._reloading = False
+        self._reload_error: str | None = None
         self._listeners: list[ResultListener] = []
 
         self._latest: VisionResult | None = None
@@ -117,6 +119,7 @@ class VisionPipeline:
     async def apply_settings(self, settings: AppSettings, changed: set[str]) -> None:
         self._settings = settings
         if "detector" in changed:
+            self._reload_error = None
             self._reload.set()
         if "tracker" in changed:
             self._tracker = create_tracker(settings.tracker)
@@ -174,6 +177,25 @@ class VisionPipeline:
         )
         raw_result = self._latest
         result = self.latest
+        active_settings = self._detector.settings if self._detector is not None else None
+        catalog_current = bool(
+            self._detector
+            and self._detector.status.loaded
+            and active_settings
+            and active_settings.backend == self._settings.detector.backend
+            and active_settings.model_path == self._settings.detector.model_path
+        )
+        detector_status.update(
+            {
+                "configured_backend": self._settings.detector.backend,
+                "configured_model": self._settings.detector.model_path,
+                "active_backend": active_settings.backend if active_settings else None,
+                "active_model": active_settings.model_path if active_settings else None,
+                "catalog_current": catalog_current,
+                "reload_pending": self._reload.is_set() or self._reloading,
+                "reload_error": self._reload_error,
+            }
+        )
         return {
             "enabled": self._settings.detector.enabled,
             "running": self._task is not None and not self._task.done(),
@@ -197,28 +219,62 @@ class VisionPipeline:
     def healthy(self) -> bool:
         if not self._settings.detector.enabled:
             return True
-        return self._detector is not None and self._detector.status.loaded and self._error is None
+        return (
+            self._detector is not None
+            and self._detector.status.loaded
+            and self._error is None
+            and self._reload_error is None
+        )
 
     # -- worker ----------------------------------------------------------
     async def _ensure_detector(self) -> None:
         if self._detector is not None and not self._reload.is_set():
             return
         self._reload.clear()
-        if self._detector is not None:
-            await asyncio.to_thread(self._detector.close)
-            self._detector = None
-
-        detector = create_detector(
-            self._settings.detector, self._models_dir, force_mock=self._force_mock
+        candidate_settings = self._settings.detector.model_copy(deep=True)
+        candidate = create_detector(
+            candidate_settings, self._models_dir, force_mock=self._force_mock
         )
+        self._reloading = True
         try:
-            await asyncio.to_thread(detector.load)
-            self._detector = detector
-            self._error = detector.status.error
+            await asyncio.to_thread(candidate.load)
         except Exception as exc:
-            self._error = f"detector load failed: {exc}"
-            self._detector = detector  # keep it so the status carries the error
-            log.error("detector unavailable", extra={"ctx": {"error": str(exc)}})
+            if candidate_settings != self._settings.detector:
+                await asyncio.to_thread(candidate.close)
+                self._reload.set()
+                return
+            message = f"detector load failed: {exc}"
+            self._reload_error = message
+            log.error("detector replacement unavailable", extra={"ctx": {"error": str(exc)}})
+
+            # With no working detector, retain the failed candidate so its
+            # detailed status remains visible. When replacing a working model,
+            # keep that model alive and only report the failed replacement.
+            if self._detector is None or not self._detector.status.loaded:
+                previous = self._detector
+                self._detector = candidate
+                self._error = message
+                if previous is not None:
+                    await asyncio.to_thread(previous.close)
+            else:
+                await asyncio.to_thread(candidate.close)
+            return
+        finally:
+            self._reloading = False
+
+        # Settings may have changed again while a large model was loading.
+        # Never activate a candidate for a configuration that is already stale.
+        if candidate_settings != self._settings.detector:
+            await asyncio.to_thread(candidate.close)
+            self._reload.set()
+            return
+
+        previous = self._detector
+        self._detector = candidate
+        self._error = candidate.status.error
+        self._reload_error = None
+        if previous is not None:
+            await asyncio.to_thread(previous.close)
 
     async def _run(self) -> None:
         log.info("vision pipeline started")
