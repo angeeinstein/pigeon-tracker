@@ -292,6 +292,40 @@ class TestEventsAndPreview:
         assert response.content[:2] == b"\xff\xd8"  # JPEG SOI
 
 
+class TestDetectionCaptures:
+    def test_manual_capture_review_and_delete(self, client: TestClient) -> None:
+        deadline = time.monotonic() + 2.0
+        created = client.post("/api/detection-captures/manual")
+        while created.status_code == 503 and time.monotonic() < deadline:
+            time.sleep(0.03)
+            created = client.post("/api/detection-captures/manual")
+        assert created.status_code == 201
+        capture = created.json()
+        assert capture["trigger"] == "manual"
+        assert capture["review_status"] == "unreviewed"
+
+        image = client.get(f"/api/detection-captures/{capture['id']}/image")
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/jpeg"
+        assert image.content[:2] == b"\xff\xd8"
+
+        reviewed = client.patch(
+            f"/api/detection-captures/{capture['id']}",
+            json={"review_status": "training", "review_label": "bird"},
+        )
+        assert reviewed.status_code == 200
+        assert reviewed.json()["review_label"] == "bird"
+        assert any(
+            item["id"] == capture["id"]
+            for item in client.get(
+                "/api/detection-captures", params={"review_status": "training"}
+            ).json()
+        )
+
+        assert client.delete(f"/api/detection-captures/{capture['id']}").status_code == 204
+        assert client.get(f"/api/detection-captures/{capture['id']}/image").status_code == 404
+
+
 class TestControllerHandshake:
     """A controller connecting must be able to complete a full exchange.
 

@@ -29,7 +29,7 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 | Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 180 tests pass; running on a real LXC          |
 | Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
-| YOLO detection                                        | Model loads and runs (73 ms/frame on 2 vCPU, CPU-only)  |
+| YOLO detection                                        | Model loads and runs (73 ms/frame at 640 px, 2 vCPU CPU-only) |
 | In-process controller simulator                       | Selectable in Settings; shown on the live camera feed   |
 | ESP32 firmware (ESP-IDF/PlatformIO)                   | Builds, flashes and connects; mechanics not commissioned |
 
@@ -127,7 +127,16 @@ systemctl restart turret-control
    where the geometry differs.
 5. **Zones**: draw an *active* zone where engagement is allowed and *no-spray*
    zones anywhere water must not go (the neighbour's window, the doorway).
-6. Only then: enable water output, arm, and turn on automatic targeting.
+6. **Settings → AI**: use `cpu`, class `bird`, and start with the 960 px input
+   default. The capture threshold keeps uncertain proposals for review without
+   allowing them into tracking. Existing installations retain their saved
+   device and input-size values during updates, so change those two fields
+   explicitly if they were previously `auto` / 640.
+7. **Detections**: review the raw evidence frames, confirm useful bird examples,
+   reject false positives, or save the current frame manually when a visible
+   bird was missed. Confirmed training images are protected from automatic
+   retention cleanup.
+8. Only then: enable water output, arm, and turn on automatic targeting.
 
 A fresh install is disarmed with water output disabled. It stays that way until
 you deliberately change it.
@@ -174,6 +183,7 @@ python tools/gen_protocol_header.py --check   # firmware header is current
 | ------------------------ | ---------------------------------------------------------- |
 | `server/app/camera/`     | RTSP ingest, latest-frame buffer, simulated source          |
 | `server/app/vision/`     | detector abstraction, YOLO backend, ByteTrack, overlays     |
+| `server/app/services/detection_capture.py` | detection evidence, review metadata, retention |
 | `server/app/targeting/`  | calibration mapping, zones, target selection, state machine |
 | `server/app/turret/`     | protocol models, controller link                            |
 | `server/app/api/`        | REST, browser WebSocket, controller WebSocket               |

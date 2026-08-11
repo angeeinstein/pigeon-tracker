@@ -5,6 +5,7 @@ import { useAsync } from './hooks/useAsync';
 import Calibration from './pages/Calibration';
 import Cameras from './pages/Cameras';
 import Dashboard from './pages/Dashboard';
+import Detections from './pages/Detections';
 import Events from './pages/Events';
 import Login from './pages/Login';
 import Settings from './pages/Settings';
@@ -17,6 +18,7 @@ const NAV = [
   { to: '/cameras', label: 'Cameras' },
   { to: '/calibration', label: 'Calibration' },
   { to: '/zones', label: 'Zones' },
+  { to: '/detections', label: 'Detections' },
   { to: '/settings', label: 'Settings' },
   { to: '/events', label: 'Events' },
   { to: '/system', label: 'System' },
@@ -50,6 +52,7 @@ function Shell() {
           <Route path="/cameras" element={<Cameras />} />
           <Route path="/calibration" element={<Calibration />} />
           <Route path="/zones" element={<Zones />} />
+          <Route path="/detections" element={<Detections />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/events" element={<Events />} />
           <Route path="/system" element={<System />} />

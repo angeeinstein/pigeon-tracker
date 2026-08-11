@@ -85,10 +85,17 @@ class DetectorSettings(BaseModel):
     #: Filename inside the models directory, or an absolute path. Ultralytics
     #: downloads well-known names (e.g. "yolov8n.pt") on first use.
     model_path: str = "yolov8n.pt"
-    device: Literal["auto", "cpu", "cuda"] = "auto"
+    device: Literal["auto", "cpu", "cuda"] = "cpu"
+    #: Proposals at or above this threshold are available for evidence capture.
+    #: Tracking still uses ``confidence`` below.
+    capture_confidence: float = Field(default=0.10, ge=0.01, le=0.99)
+    capture_enabled: bool = True
+    #: The same class must disappear for this long before a new capture is made.
+    capture_rearm_s: float = Field(default=5.0, ge=1.0, le=3600.0)
+    capture_jpeg_quality: int = Field(default=90, ge=40, le=100)
     confidence: float = Field(default=0.35, ge=0.01, le=0.99)
     iou: float = Field(default=0.45, ge=0.05, le=0.95)
-    input_size: int = Field(default=640, ge=160, le=1920)
+    input_size: int = Field(default=960, ge=160, le=1920)
     #: Class names kept after inference. Empty list = keep everything.
     classes: list[str] = Field(default_factory=lambda: ["bird"])
     max_detections: int = Field(default=32, ge=1, le=300)
@@ -323,6 +330,8 @@ class SystemSettings(BaseModel):
     max_events: int = Field(default=20_000, ge=100, le=1_000_000)
     snapshot_retention_days: int = Field(default=7, ge=1, le=365)
     max_snapshot_mb: int = Field(default=512, ge=16, le=100_000)
+    detection_retention_days: int = Field(default=90, ge=1, le=3650)
+    max_detection_mb: int = Field(default=2048, ge=64, le=1_000_000)
 
 
 # --------------------------------------------------------------------------

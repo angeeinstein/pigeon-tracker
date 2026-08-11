@@ -28,6 +28,9 @@ class TestDefaults:
         assert settings.targeting.auto_enabled is False
         assert settings.controller.mode == "physical"
         assert settings.controller.hardware.allow_unhomed_motion is False
+        assert settings.detector.device == "cpu"
+        assert settings.detector.input_size == 960
+        assert settings.detector.capture_confidence < settings.detector.confidence
 
     def test_motion_limits_are_validated(self) -> None:
         with pytest.raises(ValueError, match="pan_min_deg"):

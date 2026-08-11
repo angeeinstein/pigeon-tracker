@@ -103,13 +103,32 @@ class Detector(abc.ABC):
     def close(self) -> None:  # noqa: B027 - optional hook; not every detector holds resources
         """Release resources. Default implementation does nothing."""
 
-    def _filter(self, detections: list[Detection]) -> list[Detection]:
+    def _filter(
+        self,
+        detections: list[Detection],
+        *,
+        min_confidence: float | None = None,
+    ) -> list[Detection]:
         wanted = {c.lower() for c in self.settings.classes}
-        result = [d for d in detections if d.confidence >= self.settings.confidence]
+        threshold = self.settings.confidence if min_confidence is None else min_confidence
+        result = [d for d in detections if d.confidence >= threshold]
         if wanted:
             result = [d for d in result if d.class_name.lower() in wanted]
         result.sort(key=lambda d: d.confidence, reverse=True)
         return result[: self.settings.max_detections]
+
+    def operational(self, proposals: list[Detection]) -> list[Detection]:
+        """Apply the normal tracking threshold to capture-level proposals."""
+        return self._filter(proposals, min_confidence=self.settings.confidence)
+
+    def capturable(self, proposals: list[Detection]) -> list[Detection]:
+        """Return proposals that qualify for evidence collection."""
+        threshold = (
+            self.settings.capture_confidence
+            if self.settings.capture_enabled
+            else self.settings.confidence
+        )
+        return self._filter(proposals, min_confidence=threshold)
 
 
 class NullDetector(Detector):
@@ -177,7 +196,10 @@ class MockDetector(Detector):
 
         self.status.last_inference_ms = (time.perf_counter() - started) * 1000.0
         self.status.inferences += 1
-        return self._filter(detections)
+        threshold = min(self.settings.capture_confidence, self.settings.confidence)
+        if not self.settings.capture_enabled:
+            threshold = self.settings.confidence
+        return self._filter(detections, min_confidence=threshold)
 
 
 def create_detector(

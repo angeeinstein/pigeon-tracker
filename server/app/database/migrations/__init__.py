@@ -31,6 +31,11 @@ MIGRATIONS: list[Migration] = [
         description="initial schema (settings, calibration_points, zones, presets, events)",
         statements=[],  # created from ORM metadata
     ),
+    Migration(
+        version=2,
+        description="add detection capture review table",
+        statements=[],  # new table is created from ORM metadata
+    ),
     # Example of what a future step looks like:
     # Migration(
     #     version=2,

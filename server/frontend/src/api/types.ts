@@ -90,6 +90,32 @@ export interface EventRecord {
   snapshot: string | null;
 }
 
+export type DetectionReviewStatus = 'unreviewed' | 'training' | 'rejected';
+
+export interface DetectionCapture {
+  id: number;
+  ts: string;
+  camera_id: string;
+  trigger: 'detection' | 'manual';
+  class_name: string;
+  confidence: number | null;
+  frame_seq: number;
+  frame_width: number;
+  frame_height: number;
+  model_name: string;
+  image_name: string;
+  detections: Array<{
+    bbox: [number, number, number, number];
+    confidence: number;
+    class_id: number;
+    class_name: string;
+  }>;
+  settings: Record<string, unknown>;
+  review_status: DetectionReviewStatus;
+  review_label: string;
+  updated_at: string;
+}
+
 export interface CalibrationPoint {
   id: number;
   camera_id: string;
@@ -231,6 +257,10 @@ export interface Settings {
     backend: 'yolo' | 'mock' | 'none';
     model_path: string;
     device: 'auto' | 'cpu' | 'cuda';
+    capture_confidence: number;
+    capture_enabled: boolean;
+    capture_rearm_s: number;
+    capture_jpeg_quality: number;
     confidence: number;
     iou: number;
     input_size: number;
@@ -316,6 +346,8 @@ export interface Settings {
     max_events: number;
     snapshot_retention_days: number;
     max_snapshot_mb: number;
+    detection_retention_days: number;
+    max_detection_mb: number;
   };
 }
 

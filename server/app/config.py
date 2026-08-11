@@ -45,6 +45,7 @@ class DeploymentConfig(BaseSettings):
     data_dir: Path = Path("/var/lib/turret-control")
     models_dir: Path | None = None
     snapshot_dir: Path | None = None
+    detection_dir: Path | None = None
     static_dir: Path | None = None
 
     # --- Logging ---------------------------------------------------------
@@ -97,12 +98,21 @@ class DeploymentConfig(BaseSettings):
         return self.snapshot_dir or (self.data_dir / "snapshots")
 
     @property
+    def resolved_detection_dir(self) -> Path:
+        return self.detection_dir or (self.data_dir / "detections")
+
+    @property
     def resolved_static_dir(self) -> Path:
         return self.static_dir or (Path(__file__).resolve().parent / "static")
 
     def ensure_directories(self) -> None:
         """Create the runtime directories. Safe to call repeatedly."""
-        for path in (self.data_dir, self.resolved_models_dir, self.resolved_snapshot_dir):
+        for path in (
+            self.data_dir,
+            self.resolved_models_dir,
+            self.resolved_snapshot_dir,
+            self.resolved_detection_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def resolve_secret_key(self) -> str:

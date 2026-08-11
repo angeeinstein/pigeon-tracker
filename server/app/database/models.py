@@ -168,3 +168,53 @@ class Event(Base):
 
 
 Index("ix_events_category_ts", Event.category, Event.ts)
+
+
+class DetectionCapture(Base):
+    """A detector evidence frame that can later become training data."""
+
+    __tablename__ = "detection_captures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+    camera_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="detection")
+    class_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    frame_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    frame_width: Mapped[int] = mapped_column(Integer, nullable=False)
+    frame_height: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    image_name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    detections: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unreviewed")
+    review_label: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "ts": self.ts.isoformat() if self.ts else None,
+            "camera_id": self.camera_id,
+            "trigger": self.trigger,
+            "class_name": self.class_name,
+            "confidence": self.confidence,
+            "frame_seq": self.frame_seq,
+            "frame_width": self.frame_width,
+            "frame_height": self.frame_height,
+            "model_name": self.model_name,
+            "image_name": self.image_name,
+            "detections": self.detections,
+            "settings": self.settings,
+            "review_status": self.review_status,
+            "review_label": self.review_label,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+Index("ix_detection_captures_status_ts", DetectionCapture.review_status, DetectionCapture.ts)

@@ -65,6 +65,8 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
   },
   detector: {
     'Detection enabled': 'enabled', Backend: 'backend', Model: 'model_path', Device: 'device',
+    'Save detection evidence': 'capture_enabled', 'Capture threshold': 'capture_confidence',
+    'Capture re-arm': 'capture_rearm_s', 'Capture JPEG quality': 'capture_jpeg_quality',
     'Confidence threshold': 'confidence', 'NMS IoU': 'iou', 'Inference rate': 'fps',
     'Input size': 'input_size', Classes: 'classes', 'Half precision (CUDA only)': 'half',
   },
@@ -121,6 +123,8 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
   system: {
     'Event retention': 'event_retention_days', 'Maximum events': 'max_events',
     'Snapshot retention': 'snapshot_retention_days', 'Snapshot budget': 'max_snapshot_mb',
+    'Detection retention': 'detection_retention_days',
+    'Detection image budget': 'max_detection_mb',
   },
 };
 
@@ -504,6 +508,37 @@ function Fields({
             min={0.01}
             max={0.99}
             onChange={(v) => update({ confidence: v })}
+            hint="Operational detections at or above this value can enter tracking."
+          />
+          <Toggle
+            label="Save detection evidence"
+            checked={value.capture_enabled}
+            onChange={(v) => update({ capture_enabled: v })}
+            hint="Save one raw frame when a model class appears, for review and future training."
+          />
+          <NumberField
+            label="Capture threshold"
+            value={value.capture_confidence}
+            step={0.05}
+            min={0.01}
+            max={0.99}
+            onChange={(v) => update({ capture_confidence: v })}
+            hint="Lower than the tracking threshold so uncertain proposals are preserved."
+          />
+          <NumberField
+            label="Capture re-arm"
+            suffix="s absent"
+            value={value.capture_rearm_s}
+            min={1}
+            onChange={(v) => update({ capture_rearm_s: v })}
+            hint="A continuously visible class creates one image, not one image per frame."
+          />
+          <NumberField
+            label="Capture JPEG quality"
+            value={value.capture_jpeg_quality}
+            min={40}
+            max={100}
+            onChange={(v) => update({ capture_jpeg_quality: v })}
           />
           <NumberField
             label="NMS IoU"
@@ -528,6 +563,7 @@ function Fields({
             value={value.input_size}
             step={32}
             onChange={(v) => update({ input_size: v })}
+            hint="960 preserves more detail for small birds in a wide camera view, at higher CPU cost."
           />
           <TextField
             label="Classes"
@@ -1079,6 +1115,21 @@ function Fields({
             value={value.max_snapshot_mb}
             step={32}
             onChange={(v) => update({ max_snapshot_mb: v })}
+          />
+          <NumberField
+            label="Detection retention"
+            suffix="days"
+            value={value.detection_retention_days}
+            onChange={(v) => update({ detection_retention_days: v })}
+            hint="Reviewed training images are protected from automatic cleanup."
+          />
+          <NumberField
+            label="Detection image budget"
+            suffix="MB"
+            value={value.max_detection_mb}
+            step={128}
+            onChange={(v) => update({ max_detection_mb: v })}
+            hint="Old unreviewed/rejected images are removed first when this budget is exceeded."
           />
         </>
       );

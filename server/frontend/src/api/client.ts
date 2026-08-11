@@ -9,6 +9,8 @@
 import type {
   CalibrationPoint,
   CameraStatus,
+  DetectionCapture,
+  DetectionReviewStatus,
   EventRecord,
   Health,
   OnvifDevice,
@@ -181,6 +183,31 @@ export const api = {
     return request<EventRecord[]>(`/api/events?${query.toString()}`);
   },
   eventCategories: () => request<string[]>('/api/events/categories'),
+
+  // --- detection review --------------------------------------------
+  detectionCaptures: (
+    params: { limit?: number; review_status?: DetectionReviewStatus; class_name?: string } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.review_status) query.set('review_status', params.review_status);
+    if (params.class_name) query.set('class_name', params.class_name);
+    return request<DetectionCapture[]>(`/api/detection-captures?${query.toString()}`);
+  },
+  saveDetectionCapture: () => post<DetectionCapture>('/api/detection-captures/manual'),
+  reviewDetectionCapture: (
+    id: number,
+    review_status: DetectionReviewStatus,
+    review_label = '',
+  ) =>
+    request<DetectionCapture>(`/api/detection-captures/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ review_status, review_label }),
+    }),
+  deleteDetectionCapture: (id: number) =>
+    request<void>(`/api/detection-captures/${id}`, { method: 'DELETE' }),
+  detectionCaptureImage: (id: number) => `/api/detection-captures/${id}/image`,
+
   cameras: () =>
     request<{ primary_id: string; connected: boolean; cameras: CameraStatus[] }>('/api/cameras'),
   discoverCameras: (timeout_s = 4) =>

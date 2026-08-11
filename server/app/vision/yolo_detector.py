@@ -151,10 +151,13 @@ class YoloDetector(Detector):
         if self._model is None:
             return []
         started = time.perf_counter()
+        threshold = min(self.settings.capture_confidence, self.settings.confidence)
+        if not self.settings.capture_enabled:
+            threshold = self.settings.confidence
         results = self._model.predict(
             source=image,
             imgsz=self.settings.input_size,
-            conf=self.settings.confidence,
+            conf=threshold,
             iou=self.settings.iou,
             device=self.status.device,
             half=self.settings.half and self.status.device == "cuda",
@@ -184,7 +187,7 @@ class YoloDetector(Detector):
 
         self.status.last_inference_ms = (time.perf_counter() - started) * 1000.0
         self.status.inferences += 1
-        return self._filter(detections)
+        return self._filter(detections, min_confidence=threshold)
 
     def close(self) -> None:
         self._model = None

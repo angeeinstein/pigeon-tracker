@@ -22,6 +22,7 @@ from app.config import DeploymentConfig
 from app.database.db import database_status
 from app.logging_config import get_logger
 from app.services import event_log as ev
+from app.services.detection_capture import DetectionCaptureStore
 from app.services.event_log import EventLog, prune_snapshots
 from app.services.settings import SettingsStore
 from app.services.settings_schema import AppSettings
@@ -43,7 +44,7 @@ from app.turret.models import TurretError
 from app.turret.simulator import SimulatedController
 from app.version import version_info
 from app.vision.overlays import render_overlay
-from app.vision.pipeline import VisionPipeline
+from app.vision.pipeline import VisionPipeline, VisionResult
 
 log = get_logger(__name__)
 
@@ -57,6 +58,7 @@ class Runtime:
         self.config = config
         self.settings_store = SettingsStore()
         self.events = EventLog()
+        self.detection_captures = DetectionCaptureStore(config.resolved_detection_dir)
         self.telemetry = TelemetryHub()
 
         settings = self.settings_store.current
@@ -71,6 +73,7 @@ class Runtime:
             config.resolved_models_dir,
             force_mock=config.force_mock_detector,
         )
+        self.vision.subscribe(self._on_vision_result)
         self.calibration = CalibrationService()
         self.zones = ZoneService()
         self.selector = TargetSelector(settings.targeting)
@@ -85,6 +88,7 @@ class Runtime:
         self.started_at = time.monotonic()
         self._tasks: list[asyncio.Task[Any]] = []
         self._last_selection: SelectionResult | None = None
+        self._detection_last_seen: dict[tuple[str, str], float] = {}
         self._stopping = False
 
     # ------------------------------------------------------------------
@@ -160,6 +164,71 @@ class Runtime:
             self.turret.update_settings(settings.controller, settings.motion)
         if "controller" in changed:
             await self._sync_controller_mode()
+
+    async def _on_vision_result(self, result: VisionResult) -> None:
+        """Persist class-presence events from the detector output.
+
+        Capture-level proposals are logged before tracking and targeting
+        filters, so the history answers whether the model itself is finding
+        anything potentially useful.
+        Continuous detections of the same class are collapsed into one event;
+        that class can produce another event after being absent for a while.
+        """
+        detector = self.settings.detector
+        observations = result.proposals if detector.capture_enabled else result.detections
+        by_class: dict[str, list[float]] = {}
+        labels: dict[str, str] = {}
+        for detection in observations:
+            label = detection.class_name.strip() or f"class-{detection.class_id}"
+            key = label.casefold()
+            labels.setdefault(key, label)
+            by_class.setdefault(key, []).append(detection.confidence)
+
+        due: list[tuple[str, str, list[float]]] = []
+        for class_key, confidences in by_class.items():
+            presence_key = (result.camera_id, class_key)
+            last_seen = self._detection_last_seen.get(presence_key)
+            self._detection_last_seen[presence_key] = result.frame_ts
+            if last_seen is not None and result.frame_ts - last_seen <= detector.capture_rearm_s:
+                continue
+            due.append((class_key, labels[class_key], confidences))
+
+        if not due:
+            return
+
+        capture: dict[str, object] | None = None
+        if detector.capture_enabled and result.image is not None:
+            primary = max(due, key=lambda item: max(item[2]))
+            try:
+                capture = await self.detection_captures.create(
+                    image=result.image,
+                    camera_id=result.camera_id,
+                    frame_seq=result.frame_seq,
+                    detections=result.proposals,
+                    class_name=primary[1],
+                    confidence=max(primary[2]),
+                    model_name=detector.model_path,
+                    detector_settings=detector.model_dump(mode="json"),
+                    jpeg_quality=detector.capture_jpeg_quality,
+                )
+            except Exception:
+                log.exception("failed to save detection capture")
+
+        for _class_key, label, confidences in due:
+            data: dict[str, object] = {
+                "camera_id": result.camera_id,
+                "class": label,
+                "count": len(confidences),
+                "max_confidence": round(max(confidences), 3),
+                "frame_seq": result.frame_seq,
+            }
+            if capture is not None:
+                data["capture_id"] = capture["id"]
+            await self.events.emit(
+                ev.CAT_DETECTION,
+                f"{label} detected",
+                data=data,
+            )
 
     @property
     def settings(self) -> AppSettings:
@@ -499,6 +568,26 @@ class Runtime:
         await asyncio.to_thread(path.write_bytes, data)
         return str(path)
 
+    async def save_manual_detection_capture(self) -> dict[str, object] | None:
+        """Save the current primary frame so a missed bird can be reviewed."""
+        camera_id = self.settings.cameras.primary_id
+        frame = self.cameras.latest(camera_id)
+        if frame is None:
+            return None
+        detector = self.settings.detector
+        return await self.detection_captures.create(
+            image=frame.image,
+            camera_id=camera_id,
+            frame_seq=frame.seq,
+            detections=[],
+            class_name="manual",
+            confidence=None,
+            model_name=detector.model_path,
+            detector_settings=detector.model_dump(mode="json"),
+            jpeg_quality=detector.capture_jpeg_quality,
+            trigger="manual",
+        )
+
     # ------------------------------------------------------------------
     # loops
     # ------------------------------------------------------------------
@@ -535,7 +624,9 @@ class Runtime:
                 ),
                 now=time.time(),
             )
-            self._last_selection = selection
+        # Do not retain a target for telemetry after the vision result has gone
+        # stale or the primary camera has disconnected.
+        self._last_selection = selection
 
         turret = self.turret.state
         ctx = TickContext(
@@ -621,10 +712,20 @@ class Runtime:
                     system.snapshot_retention_days,
                     system.max_snapshot_mb,
                 )
-                if removed or files:
+                captures = await self.detection_captures.prune(
+                    system.detection_retention_days,
+                    system.max_detection_mb,
+                )
+                if removed or files or captures:
                     log.info(
                         "retention cleanup",
-                        extra={"ctx": {"events_removed": removed, "snapshots_removed": files}},
+                        extra={
+                            "ctx": {
+                                "events_removed": removed,
+                                "snapshots_removed": files,
+                                "detection_captures_removed": captures,
+                            }
+                        },
                     )
             except asyncio.CancelledError:
                 raise
@@ -731,6 +832,7 @@ class Runtime:
                 "data_dir": str(self.config.data_dir),
                 "models_dir": str(self.config.resolved_models_dir),
                 "snapshots_dir": str(self.config.resolved_snapshot_dir),
+                "detections_dir": str(self.config.resolved_detection_dir),
                 "database": str(self.config.database_path),
             },
             "gpu": gpu_info(),

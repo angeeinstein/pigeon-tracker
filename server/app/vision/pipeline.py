@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from app.camera.manager import CameraManager
 from app.logging_config import get_logger
 from app.services.settings_schema import AppSettings
@@ -41,10 +43,16 @@ class VisionResult:
     wall_ts: float
     frame_width: int
     frame_height: int
+    #: Low-confidence proposals retained for evidence collection.
+    proposals: list[Detection] = field(default_factory=list)
+    #: Proposals above the operational threshold, used by the tracker.
     detections: list[Detection] = field(default_factory=list)
     tracks: list[Track] = field(default_factory=list)
     inference_ms: float = 0.0
     total_ms: float = 0.0
+    #: The exact source frame. Kept out of serialised payloads and used by
+    #: evidence listeners immediately after inference.
+    image: np.ndarray | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +61,7 @@ class VisionResult:
             "wall_ts": self.wall_ts,
             "width": self.frame_width,
             "height": self.frame_height,
+            "proposals": len(self.proposals),
             "detections": len(self.detections),
             "tracks": [t.as_dict() for t in self.tracks],
             "inference_ms": round(self.inference_ms, 1),
@@ -111,18 +120,48 @@ class VisionPipeline:
             self._reload.set()
         if "tracker" in changed:
             self._tracker = create_tracker(settings.tracker)
+        if "cameras" in changed:
+            # Never carry detections or track history across a primary-camera
+            # switch or source restart.
+            self._invalidate_result()
+            self._last_frame_seq = -1
 
     def subscribe(self, listener: ResultListener) -> None:
         self._listeners.append(listener)
 
+    def _invalidate_result(self) -> None:
+        """Discard detections and tracking history after an input interruption."""
+        if self._latest is None:
+            return
+        self._latest = None
+        self._tracker.reset()
+
     # -- access ----------------------------------------------------------
     @property
     def latest(self) -> VisionResult | None:
-        return self._latest
+        result = self._latest
+        if result is None:
+            return None
+
+        # A vision result is only actionable while it still represents the
+        # current, connected primary camera.  Camera buffers intentionally keep
+        # their most recent frame, so without this check a frozen stream would
+        # otherwise leave its last detections visible to the targeting loop
+        # indefinitely.
+        if result.camera_id != self._settings.cameras.primary_id:
+            return None
+        camera = self._settings.cameras.get(result.camera_id)
+        source = self._cameras.get(result.camera_id)
+        if camera is None or source is None or not source.status.connected:
+            return None
+        if time.monotonic() - result.frame_ts > camera.stall_timeout_s:
+            return None
+        return result
 
     @property
     def tracks(self) -> list[Track]:
-        return list(self._latest.tracks) if self._latest else []
+        result = self.latest
+        return list(result.tracks) if result else []
 
     def status(self) -> dict[str, Any]:
         detector_status = (
@@ -133,7 +172,8 @@ class VisionPipeline:
                 "loaded": False,
             }
         )
-        result = self._latest
+        raw_result = self._latest
+        result = self.latest
         return {
             "enabled": self._settings.detector.enabled,
             "running": self._task is not None and not self._task.done(),
@@ -147,7 +187,10 @@ class VisionPipeline:
             "effective_fps": round(self._effective_fps, 2),
             "ticks": self._ticks,
             "error": self._error,
-            "last_result_age_s": (round(time.monotonic() - result.frame_ts, 2) if result else None),
+            "last_result_age_s": (
+                round(time.monotonic() - raw_result.frame_ts, 2) if raw_result else None
+            ),
+            "result_stale": raw_result is not None and result is None,
         }
 
     @property
@@ -190,6 +233,7 @@ class VisionPipeline:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._invalidate_result()
                 self._error = str(exc)
                 log.exception("vision tick failed")
                 await asyncio.sleep(1.0)
@@ -207,13 +251,14 @@ class VisionPipeline:
 
     async def _tick(self) -> None:
         if not self._settings.detector.enabled:
-            self._latest = None
+            self._invalidate_result()
             await asyncio.sleep(0.2)
             return
 
         await self._ensure_detector()
         detector = self._detector
         if detector is None or not detector.status.loaded:
+            self._invalidate_result()
             await asyncio.sleep(0.5)
             return
 
@@ -221,12 +266,16 @@ class VisionPipeline:
         frame = self._cameras.latest(camera_id)
         if frame is None or frame.seq == self._last_frame_seq:
             # No camera, or no new frame since last tick: nothing to do.
+            if self._latest is not None and self.latest is None:
+                self._invalidate_result()
             await asyncio.sleep(0.02)
             return
         self._last_frame_seq = frame.seq
 
         tick_started = time.perf_counter()
-        detections = await asyncio.to_thread(detector.infer, frame.image)
+        raw_detections = await asyncio.to_thread(detector.infer, frame.image)
+        proposals = detector.capturable(raw_detections)
+        detections = detector.operational(raw_detections)
         inference_ms = detector.status.last_inference_ms
 
         if self._settings.tracker.enabled:
@@ -241,10 +290,12 @@ class VisionPipeline:
             wall_ts=frame.wall_ts,
             frame_width=frame.width,
             frame_height=frame.height,
+            proposals=proposals,
             detections=detections,
             tracks=tracks,
             inference_ms=inference_ms,
             total_ms=(time.perf_counter() - tick_started) * 1000.0,
+            image=frame.image,
         )
         self._latest = result
         self._ticks += 1
