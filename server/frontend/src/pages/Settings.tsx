@@ -20,6 +20,7 @@ import {
   Banner,
   Card,
   NumberField as BaseNumberField,
+  Pill,
   SelectField as BaseSelectField,
   Spinner,
   TextField as BaseTextField,
@@ -42,6 +43,18 @@ const TABS: { id: SectionName; label: string }[] = [
   { id: 'ui', label: 'Interface' },
   { id: 'system', label: 'Retention' },
 ];
+
+const SECTION_DESCRIPTIONS: Record<SectionName, string> = {
+  cameras: 'Choose video sources and decide which camera drives detection and calibration.',
+  detector: 'Configure the model, input size, classes and confidence filters.',
+  tracker: 'Control how detections become stable identities across frames.',
+  motion: 'Set server-side movement limits, speed, acceleration and parking behaviour.',
+  controller: 'Choose simulated or physical hardware and configure its mechanics and link.',
+  spray: 'Set water-output safety limits and timing budgets.',
+  targeting: 'Control target selection, aiming, verification, retries and engagement rules.',
+  ui: 'Tune preview quality, telemetry rate and visual overlays.',
+  system: 'Set database event and snapshot retention limits.',
+};
 
 const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
   cameras: {
@@ -117,6 +130,47 @@ function same(left: unknown, right: unknown): boolean {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function slugCameraId(name: string): string {
+  return name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'camera';
+}
+
+function uniqueCameraId(name: string, sources: CameraConfig[], currentIndex = -1): string {
+  const used = new Set(
+    sources.filter((_, index) => index !== currentIndex).map((source) => source.id),
+  );
+  const base = slugCameraId(name);
+  if (!used.has(base)) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const ending = `-${suffix}`;
+    const candidate = `${base.slice(0, 64 - ending.length)}${ending}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base.slice(0, 52)}-${Date.now().toString(36)}`.slice(0, 64);
+}
+
+function cameraIdError(id: string, sources: CameraConfig[], currentIndex: number): string | undefined {
+  if (!id) return 'An id is required.';
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return "Use only letters, numbers, '-' and '_'.";
+  if (id.length > 64) return 'Use at most 64 characters.';
+  if (sources.some((source, index) => index !== currentIndex && source.id === id)) {
+    return 'This id is already used by another camera.';
+  }
+  return undefined;
+}
+
+function firstCameraIdError(cameras: SettingsType['cameras']): string | undefined {
+  for (let index = 0; index < cameras.sources.length; index += 1) {
+    const error = cameraIdError(cameras.sources[index].id, cameras.sources, index);
+    if (error) return `Camera ${index + 1}: ${error}`;
+  }
+  return undefined;
 }
 
 function getPath(value: unknown, path: string): unknown {
@@ -232,8 +286,13 @@ export default function Settings() {
   const dirtySections = TABS.filter((entry) => !same(draft[entry.id], saved[entry.id])).map(
     (entry) => entry.id,
   );
+  const cameraProblem = firstCameraIdError(draft.cameras);
   const save = async () => {
     if (dirtySections.length === 0) return;
+    if (cameraProblem) {
+      notify(cameraProblem, 'bad');
+      return;
+    }
     setSaving(true);
     try {
       const patch = Object.fromEntries(
@@ -278,13 +337,15 @@ export default function Settings() {
 
   return (
     <div className="space-y-4">
-      <nav className="grid grid-cols-3 gap-1 pb-1 sm:flex sm:overflow-x-auto">
+      <nav className="grid grid-cols-3 gap-1 rounded-xl border border-edge bg-panel p-1.5 shadow-lg shadow-black/20 sm:flex sm:overflow-x-auto">
         {TABS.map((entry) => (
           <button
             key={entry.id}
             onClick={() => setTab(entry.id)}
-            className={`whitespace-nowrap rounded-lg px-2 py-1.5 text-center text-sm transition sm:px-3 ${
-              tab === entry.id ? 'bg-panelalt text-ink' : 'text-muted hover:text-ink'
+            className={`whitespace-nowrap rounded-lg border px-2 py-2 text-center text-sm transition sm:px-3 ${
+              tab === entry.id
+                ? 'border-accent/50 bg-accent/15 text-ink shadow-sm'
+                : 'border-transparent text-muted hover:border-edge hover:bg-panelalt hover:text-ink'
             }`}
           >
             <span
@@ -301,15 +362,17 @@ export default function Settings() {
         ))}
       </nav>
 
-      <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-edge bg-panel/95 px-3 py-2 shadow-lg backdrop-blur">
-        <p className="text-xs text-muted">
-          {dirtySections.length > 0 ? (
+      <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-panel/95 px-3 py-2 shadow-lg backdrop-blur">
+        <p className={`text-xs ${cameraProblem ? 'text-bad' : 'text-muted'}`}>
+          {cameraProblem ? (
+            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-bad" />{cameraProblem}</>
+          ) : dirtySections.length > 0 ? (
             <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-warn" />{dirtySections.length} tab{dirtySections.length === 1 ? '' : 's'} with unsaved changes</>
           ) : (
             <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />All changes saved</>
           )}
         </p>
-        <button className="btn btn-primary px-3 py-1 text-xs" disabled={dirtySections.length === 0 || saving} onClick={save}>
+        <button className="btn btn-primary px-3 py-1 text-xs" disabled={dirtySections.length === 0 || saving || Boolean(cameraProblem)} onClick={save}>
           {saving ? 'Saving…' : 'Save all changes'}
         </button>
       </div>
@@ -358,7 +421,9 @@ function SectionEditor({
 
   return (
     <Card
-      title={section}
+      title={`${TABS.find((entry) => entry.id === section)?.label ?? section} settings`}
+      titleClassName="text-base font-semibold text-ink"
+      className="border-2 border-edge/90"
       actions={
         <button className="btn px-2 py-1 text-xs" onClick={resetSection} disabled={same(draft[section], defaults[section])}>
           Reset section
@@ -366,6 +431,9 @@ function SectionEditor({
       }
     >
       <FieldContext.Provider value={{ section, saved: saved[section], draft: draft[section], defaults: defaults[section], prefix: '', resetValue }}>
+        <p className="mb-4 border-b border-edge pb-3 text-sm text-muted">
+          {SECTION_DESCRIPTIONS[section]}
+        </p>
         <div className="grid gap-x-6 md:grid-cols-2">
           <Fields section={section} draft={draft[section]} update={update} onCameraAdded={onCameraAdded} />
         </div>
@@ -1108,7 +1176,7 @@ function CameraDiscoveryPanel({
   };
 
   return (
-    <div className="md:col-span-2 mb-4 rounded-lg border border-accent/30 bg-accent/5 p-3">
+    <div className="md:col-span-2 mb-5 rounded-xl border-2 border-accent/35 bg-accent/10 p-4 shadow-md shadow-black/20">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-medium">Add a network camera</h3>
@@ -1250,7 +1318,13 @@ function CameraFields({
 
   const patchSource = (index: number, patch: Partial<CameraConfig>) => {
     const next = sources.map((source, i) => (i === index ? { ...source, ...patch } : source));
-    update({ sources: next });
+    const previous = sources[index];
+    update({
+      sources: next,
+      ...(patch.id !== undefined && draft.primary_id === previous.id
+        ? { primary_id: patch.id }
+        : {}),
+    });
   };
 
   const removeSource = (index: number) => {
@@ -1263,13 +1337,14 @@ function CameraFields({
   };
 
   const addSource = () => {
-    const id = `camera${sources.length + 1}`;
+    const name = `New camera ${sources.length + 1}`;
+    const id = uniqueCameraId(name, sources);
     update({
       sources: [
         ...sources,
         {
           id,
-          name: 'New camera',
+          name,
           url: '',
           enabled: false,
           role: 'aux',
@@ -1288,105 +1363,188 @@ function CameraFields({
     <>
       <CameraDiscoveryPanel onAdded={onCameraAdded} />
 
-      <div className="md:col-span-2">
+      <div className="md:col-span-2 mb-5 rounded-xl border-2 border-accent/50 bg-accent/10 p-4 shadow-md shadow-black/20">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-accent/20 text-accent">◎</span>
+          <div>
+            <h3 className="text-sm font-semibold text-ink">Primary camera</h3>
+            <p className="text-xs text-muted">Used for detection, tracking, zones and calibration.</p>
+          </div>
+        </div>
         <SelectField
           label="Primary camera (detection & calibration)"
           value={draft.primary_id}
-          options={sources.map((source) => ({ value: source.id, label: `${source.name} (${source.id})` }))}
+          options={sources.map((source) => ({
+            value: source.id,
+            label: `${source.name} (${source.id})`,
+          }))}
           onChange={(v) => update({ primary_id: v })}
         />
       </div>
 
-      {sources.map((source, index) => (
-        <CameraFieldScope key={`${index}-${source.id}`} source={source} index={index}>
-        <div className="md:col-span-2 mt-3 rounded-lg border border-edge p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-medium">{source.name || source.id}</h3>
-            {sources.length > 1 && (
-              <button
-                className="btn px-2 py-0.5 text-xs"
-                onClick={() => removeSource(index)}
-              >
-                Remove
-              </button>
-            )}
-          </div>
-          <div className="grid gap-x-6 md:grid-cols-2">
-            <TextField label="Id" value={source.id} onChange={(v) => patchSource(index, { id: v })} />
-            <TextField
-              label="Name"
-              value={source.name}
-              onChange={(v) => patchSource(index, { name: v })}
-            />
-            <div className="md:col-span-2">
-              <TextField
-                label="RTSP URL"
-                value={source.url}
-                onChange={(v) => patchSource(index, { url: v })}
-                hint="Credentials may be written as ${VARIABLE} and resolved from the environment file. Leave empty to use the built-in simulated source."
-              />
-            </div>
-            <SelectField
-              label="Role"
-              value={source.role}
-              options={[
-                { value: 'overview', label: 'Overview (fixed)' },
-                { value: 'turret', label: 'Turret-mounted' },
-                { value: 'aux', label: 'Auxiliary' },
-              ]}
-              onChange={(v) => patchSource(index, { role: v })}
-            />
-            <SelectField
-              label="Backend"
-              value={source.backend}
-              options={[
-                { value: 'auto', label: 'auto' },
-                { value: 'gstreamer', label: 'GStreamer' },
-                { value: 'opencv', label: 'FFmpeg (OpenCV)' },
-                { value: 'simulated', label: 'Simulated' },
-              ]}
-              onChange={(v) => patchSource(index, { backend: v })}
-            />
-            <SelectField
-              label="Transport"
-              value={source.transport}
-              options={[
-                { value: 'tcp', label: 'TCP (reliable)' },
-                { value: 'udp', label: 'UDP (lower latency)' },
-              ]}
-              onChange={(v) => patchSource(index, { transport: v })}
-            />
-            <NumberField
-              label="Latency buffer"
-              suffix="ms"
-              value={source.latency_ms}
-              step={10}
-              onChange={(v) => patchSource(index, { latency_ms: v })}
-            />
-            <NumberField
-              label="Downscale width"
-              suffix="px"
-              value={source.target_width}
-              step={80}
-              onChange={(v) => patchSource(index, { target_width: v })}
-              hint="0 keeps the native resolution."
-            />
-            <NumberField
-              label="Stall timeout"
-              suffix="s"
-              value={source.stall_timeout_s}
-              step={1}
-              onChange={(v) => patchSource(index, { stall_timeout_s: v })}
-            />
-            <Toggle
-              label="Enabled"
-              checked={source.enabled}
-              onChange={(v) => patchSource(index, { enabled: v })}
-            />
-          </div>
-        </div>
-        </CameraFieldScope>
-      ))}
+      {sources.map((source, index) => {
+        const isPrimary = source.id === draft.primary_id;
+        const generatedId = uniqueCameraId(source.name, sources, index);
+        const idFollowsName = source.id === generatedId;
+        const idProblem = cameraIdError(source.id, sources, index);
+        const changeName = (name: string) => {
+          patchSource(index, {
+            name,
+            ...(idFollowsName ? { id: uniqueCameraId(name, sources, index) } : {}),
+          });
+        };
+        return (
+          <CameraFieldScope key={index} source={source} index={index}>
+            <article
+              className={`md:col-span-2 mb-4 overflow-hidden rounded-xl border-2 shadow-lg shadow-black/20 ${
+                isPrimary
+                  ? 'border-accent/60 bg-accent/[0.04]'
+                  : 'border-edge bg-panelalt/35'
+              }`}
+            >
+              <header className="flex flex-wrap items-center justify-between gap-3 border-b border-edge bg-panelalt/70 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    Camera {index + 1}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="truncate text-base font-semibold text-ink">
+                      {source.name || source.id || 'Unnamed camera'}
+                    </h3>
+                    {isPrimary && <Pill tone="info">primary</Pill>}
+                    <Pill tone={source.enabled ? 'good' : 'idle'}>
+                      {source.enabled ? 'enabled' : 'disabled'}
+                    </Pill>
+                    <Pill tone="idle">{source.role}</Pill>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  {!isPrimary && (
+                    <button
+                      className="btn px-2 py-1 text-xs"
+                      onClick={() => update({ primary_id: source.id })}
+                      disabled={Boolean(idProblem)}
+                    >
+                      Make primary
+                    </button>
+                  )}
+                  {sources.length > 1 && (
+                    <button
+                      className="btn px-2 py-1 text-xs text-bad"
+                      onClick={() => removeSource(index)}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </header>
+
+              <div className="space-y-4 p-4">
+                <section className="rounded-lg border border-edge bg-[#11151d]/70 p-3">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-accent">
+                    Identity
+                  </h4>
+                  <div className="grid gap-x-6 md:grid-cols-2">
+                    <TextField label="Name" value={source.name} onChange={changeName} />
+                    <TextField
+                      label="Id"
+                      value={source.id}
+                      onChange={(id) => patchSource(index, { id })}
+                      error={idProblem}
+                      hint={
+                        idFollowsName
+                          ? 'Generated from the name. Edit the id to manage it manually.'
+                          : 'Manually managed stable identifier.'
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-edge bg-[#11151d]/70 p-3">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-accent">
+                    Stream and purpose
+                  </h4>
+                  <div className="grid gap-x-6 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <TextField
+                        label="RTSP URL"
+                        value={source.url}
+                        onChange={(v) => patchSource(index, { url: v })}
+                        hint="Credentials may be written as ${VARIABLE} and resolved from the environment file. Leave empty to use the built-in simulated source."
+                      />
+                    </div>
+                    <SelectField
+                      label="Role"
+                      value={source.role}
+                      options={[
+                        { value: 'overview', label: 'Overview (fixed)' },
+                        { value: 'turret', label: 'Turret-mounted' },
+                        { value: 'aux', label: 'Auxiliary' },
+                      ]}
+                      onChange={(v) => patchSource(index, { role: v })}
+                    />
+                    <SelectField
+                      label="Backend"
+                      value={source.backend}
+                      options={[
+                        { value: 'auto', label: 'auto' },
+                        { value: 'gstreamer', label: 'GStreamer' },
+                        { value: 'opencv', label: 'FFmpeg (OpenCV)' },
+                        { value: 'simulated', label: 'Simulated' },
+                      ]}
+                      onChange={(v) => patchSource(index, { backend: v })}
+                    />
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-edge bg-[#11151d]/70 p-3">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-accent">
+                    Connection and performance
+                  </h4>
+                  <div className="grid gap-x-6 md:grid-cols-2">
+                    <SelectField
+                      label="Transport"
+                      value={source.transport}
+                      options={[
+                        { value: 'tcp', label: 'TCP (reliable)' },
+                        { value: 'udp', label: 'UDP (lower latency)' },
+                      ]}
+                      onChange={(v) => patchSource(index, { transport: v })}
+                    />
+                    <NumberField
+                      label="Latency buffer"
+                      suffix="ms"
+                      value={source.latency_ms}
+                      step={10}
+                      onChange={(v) => patchSource(index, { latency_ms: v })}
+                    />
+                    <NumberField
+                      label="Downscale width"
+                      suffix="px"
+                      value={source.target_width}
+                      step={80}
+                      onChange={(v) => patchSource(index, { target_width: v })}
+                      hint="0 keeps the native resolution."
+                    />
+                    <NumberField
+                      label="Stall timeout"
+                      suffix="s"
+                      value={source.stall_timeout_s}
+                      step={1}
+                      onChange={(v) => patchSource(index, { stall_timeout_s: v })}
+                    />
+                    <Toggle
+                      label="Enabled"
+                      checked={source.enabled}
+                      onChange={(v) => patchSource(index, { enabled: v })}
+                    />
+                  </div>
+                </section>
+              </div>
+            </article>
+          </CameraFieldScope>
+        );
+      })}
 
       <div className="md:col-span-2 mt-3">
         <button className="btn" onClick={addSource}>

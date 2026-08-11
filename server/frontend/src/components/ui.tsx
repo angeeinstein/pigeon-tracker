@@ -59,18 +59,20 @@ export function Card({
   title,
   children,
   className = '',
+  titleClassName = 'card-title',
   actions,
 }: {
   title?: string;
   children: ReactNode;
   className?: string;
+  titleClassName?: string;
   actions?: ReactNode;
 }) {
   return (
     <section className={`card ${className}`}>
       {(title || actions) && (
         <header className="mb-3 flex items-center justify-between gap-2">
-          {title && <h2 className="card-title mb-0">{title}</h2>}
+          {title && <h2 className={`${titleClassName} mb-0`}>{title}</h2>}
           {actions}
         </header>
       )}
@@ -231,6 +233,7 @@ export function TextField({
   placeholder,
   type = 'text',
   autoComplete,
+  error,
   settingStatus,
   onSettingReset,
   settingResetLabel,
@@ -242,6 +245,7 @@ export function TextField({
   placeholder?: string;
   type?: string;
   autoComplete?: string;
+  error?: string;
 } & SettingAdornment) {
   const id = useId();
   return (
@@ -250,13 +254,17 @@ export function TextField({
       <input
         id={id}
         type={type}
-        className="field"
+        className={`field ${error ? 'border-bad/70 focus:border-bad' : ''}`}
         value={value}
         placeholder={placeholder}
         autoComplete={autoComplete}
         onChange={(event) => onChange(event.target.value)}
       />
-      {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
+      {error ? (
+        <span className="mt-1 block text-xs text-bad">{error}</span>
+      ) : (
+        hint && <span className="mt-1 block text-xs text-muted">{hint}</span>
+      )}
     </div>
   );
 }
