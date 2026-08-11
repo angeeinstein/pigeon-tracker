@@ -246,6 +246,43 @@ function TextField(props: ComponentProps<typeof BaseTextField>) {
   return <BaseTextField {...props} {...useSettingAdornment(props.label)} />;
 }
 
+function ClassListField({
+  label,
+  value,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: string[];
+  onChange: (value: string[]) => void;
+  hint?: string;
+}) {
+  const canonical = value.join(', ');
+  const [text, setText] = useState(canonical);
+
+  // Keep trailing separators in the input while the user is typing. The
+  // previous implementation immediately converted "bird," to ["bird"] and
+  // rendered it back as "bird", making a second class impossible to enter.
+  useEffect(() => setText(canonical), [canonical]);
+
+  return (
+    <TextField
+      label={label}
+      value={text}
+      onChange={(next) => {
+        setText(next);
+        onChange(
+          next
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter(Boolean),
+        );
+      }}
+      hint={hint}
+    />
+  );
+}
+
 function NumberField(props: ComponentProps<typeof BaseNumberField>) {
   return <BaseNumberField {...props} {...useSettingAdornment(props.label)} />;
 }
@@ -565,12 +602,10 @@ function Fields({
             onChange={(v) => update({ input_size: v })}
             hint="960 preserves more detail for small birds in a wide camera view, at higher CPU cost."
           />
-          <TextField
+          <ClassListField
             label="Classes"
-            value={value.classes.join(', ')}
-            onChange={(v) =>
-              update({ classes: v.split(',').map((s) => s.trim()).filter(Boolean) })
-            }
+            value={value.classes}
+            onChange={(v) => update({ classes: v })}
             hint="Comma separated. Empty keeps every class the model produces."
           />
           <Toggle
@@ -914,12 +949,10 @@ function Fields({
             checked={value.auto_enabled}
             onChange={(v) => update({ auto_enabled: v })}
           />
-          <TextField
+          <ClassListField
             label="Target classes"
-            value={value.target_classes.join(', ')}
-            onChange={(v) =>
-              update({ target_classes: v.split(',').map((s) => s.trim()).filter(Boolean) })
-            }
+            value={value.target_classes}
+            onChange={(v) => update({ target_classes: v })}
           />
           <NumberField
             label="Minimum confidence"
