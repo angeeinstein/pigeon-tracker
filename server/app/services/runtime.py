@@ -448,9 +448,14 @@ class Runtime:
         if draw:
             result = self.vision.latest
             tracks = result.tracks if result and result.camera_id == camera else []
-            turret_point = self.turret_image_point()
+            is_primary = camera == self.settings.cameras.primary_id
+            turret_point = self.turret_image_point() if is_primary else None
             aim_point = None
-            if self._last_selection and self.state_machine.target_track_id is not None:
+            if (
+                is_primary
+                and self._last_selection
+                and self.state_machine.target_track_id is not None
+            ):
                 candidate = self._last_selection.find(self.state_machine.target_track_id)
                 if candidate is not None:
                     aim_point = candidate.aim_px
@@ -654,7 +659,7 @@ class Runtime:
             "auto_enabled": self.settings.targeting.auto_enabled,
             "detection_enabled": self.settings.detector.enabled,
             "spray_enabled": self.settings.spray.enabled,
-            "camera_connected": self.cameras.any_connected,
+            "camera_connected": self.cameras.status_dict()["connected"],
             "controller_connected": self.turret.connected,
             "controller_mode": self.settings.controller.mode,
             "controller_simulated": bool(self.turret.info.hardware.get("simulated")),

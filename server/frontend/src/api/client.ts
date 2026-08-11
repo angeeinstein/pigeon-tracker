@@ -8,6 +8,7 @@
 
 import type {
   CalibrationPoint,
+  CameraStatus,
   EventRecord,
   Health,
   OnvifDevice,
@@ -180,7 +181,8 @@ export const api = {
     return request<EventRecord[]>(`/api/events?${query.toString()}`);
   },
   eventCategories: () => request<string[]>('/api/events/categories'),
-  cameras: () => request<{ primary_id: string; connected: boolean; cameras: unknown[] }>('/api/cameras'),
+  cameras: () =>
+    request<{ primary_id: string; connected: boolean; cameras: CameraStatus[] }>('/api/cameras'),
   discoverCameras: (timeout_s = 4) =>
     post<{ devices: OnvifDevice[]; note: string }>(
       `/api/cameras/discover?timeout_s=${timeout_s}`,

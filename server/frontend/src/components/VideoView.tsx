@@ -13,10 +13,16 @@ import type { Telemetry } from '../api/types';
 
 interface Props {
   telemetry: Telemetry | null;
+  /** Camera source to show. Omit for the configured primary camera. */
+  cameraId?: string;
+  /** Connection and dimensions for a non-primary camera. */
+  cameraConnected?: boolean;
+  frameSize?: { width: number; height: number };
   /** Server-drawn boxes/zones. Turn off when the page draws its own. */
   serverOverlays?: boolean;
   /** Client-side tracks/target markers. */
   showTracks?: boolean;
+  showAimMarkers?: boolean;
   onPick?: (x: number, y: number, event: React.MouseEvent) => void;
   children?: ReactNode;
   className?: string;
@@ -25,16 +31,20 @@ interface Props {
 
 export default function VideoView({
   telemetry,
+  cameraId,
+  cameraConnected,
+  frameSize,
   serverOverlays = true,
   showTracks = true,
+  showAimMarkers = true,
   onPick,
   children,
   className = '',
   cursor = 'crosshair',
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const width = telemetry?.frame?.width ?? 16;
-  const height = telemetry?.frame?.height ?? 9;
+  const width = frameSize?.width || telemetry?.frame?.width || 16;
+  const height = frameSize?.height || telemetry?.frame?.height || 9;
 
   const handleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -48,7 +58,10 @@ export default function VideoView({
     [onPick],
   );
 
-  const streamUrl = `/api/camera/stream.mjpg?overlays=${serverOverlays ? 'true' : 'false'}`;
+  const streamParams = new URLSearchParams({ overlays: String(serverOverlays) });
+  if (cameraId) streamParams.set('camera_id', cameraId);
+  const streamUrl = `/api/camera/stream.mjpg?${streamParams.toString()}`;
+  const isConnected = cameraConnected ?? telemetry?.camera_connected;
 
   return (
     <div
@@ -64,7 +77,7 @@ export default function VideoView({
         draggable={false}
       />
 
-      {!telemetry?.camera_connected && (
+      {!isConnected && (
         <div className="absolute inset-0 grid place-items-center bg-black/70 text-sm text-muted">
           camera not connected
         </div>
@@ -95,7 +108,7 @@ export default function VideoView({
             );
           })}
 
-        {telemetry?.target?.aim_norm && (
+        {showAimMarkers && telemetry?.target?.aim_norm && (
           <g>
             <circle
               cx={telemetry.target.aim_norm[0]}
@@ -108,7 +121,7 @@ export default function VideoView({
           </g>
         )}
 
-        {telemetry?.turret_point && (
+        {showAimMarkers && telemetry?.turret_point && (
           <g stroke="#f5a524" strokeWidth={0.003} fill="none">
             {telemetry.controller_simulated && (
               <rect

@@ -57,6 +57,10 @@ event loop stays responsive; the ML runtimes release the GIL during inference.
 1. **Ingest** — `RtspCameraSource` runs a decode loop in a dedicated thread
    (GStreamer `appsink` with `drop=true max-buffers=1`, falling back to OpenCV
    FFmpeg). Each decoded frame replaces the buffer contents.
+   Every enabled source is ingested, but only the configured primary source is
+   sent through the vision and targeting pipeline. The browser camera gallery
+   uses one live MJPEG stream and low-rate snapshots for auxiliary previews to
+   avoid multiplying full-rate JPEG encoding work.
 2. **Detection** — `VisionPipeline` ticks at `detector.fps`, grabs the newest
    frame, runs the detector in a worker thread, feeds detections to the
    tracker, and publishes a `VisionResult` (tracks + timing) to subscribers.

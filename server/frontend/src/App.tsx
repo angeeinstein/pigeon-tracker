@@ -3,6 +3,7 @@ import { api } from './api/client';
 import { Pill } from './components/ui';
 import { useAsync } from './hooks/useAsync';
 import Calibration from './pages/Calibration';
+import Cameras from './pages/Cameras';
 import Dashboard from './pages/Dashboard';
 import Events from './pages/Events';
 import Login from './pages/Login';
@@ -13,6 +14,7 @@ import { AppProviders, ToastStack, useLive, useToast } from './state';
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
+  { to: '/cameras', label: 'Cameras' },
   { to: '/calibration', label: 'Calibration' },
   { to: '/zones', label: 'Zones' },
   { to: '/settings', label: 'Settings' },
@@ -45,6 +47,7 @@ function Shell() {
       <main className="flex-1">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/cameras" element={<Cameras />} />
           <Route path="/calibration" element={<Calibration />} />
           <Route path="/zones" element={<Zones />} />
           <Route path="/settings" element={<Settings />} />

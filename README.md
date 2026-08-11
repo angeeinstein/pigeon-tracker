@@ -110,6 +110,10 @@ systemctl restart turret-control
    server and cameras are on different subnets, enter the ONVIF device-service
    URL manually. The built-in simulated balcony remains available by choosing
    the `Simulated` backend or leaving a camera URL empty.
+   The **Cameras** page shows one selected live stream plus low-rate previews
+   for every other configured source. Only the selected *primary* camera feeds
+   detection, tracking, zones, calibration and automatic targeting; auxiliary
+   cameras are view-only for now.
 3. Before the mechanics exist, choose **Settings → Controller → Simulated
    turret** and save. The server starts a virtual ESP32 using the normal
    controller protocol; home it and the amber box on the real camera feed
