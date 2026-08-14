@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.camera.rtsp import encode_jpeg, safe_filename
@@ -138,6 +138,114 @@ class DetectionCaptureStore:
                 stmt = stmt.where(DetectionCapture.class_name == class_name)
             stmt = stmt.limit(max(1, min(limit, 500))).offset(max(0, offset))
             return [_capture_dict(row) for row in session.scalars(stmt).all()]
+
+        return await run_db(_query)
+
+    async def page(
+        self,
+        *,
+        limit: int = 60,
+        offset: int = 0,
+        review_status: str | None = None,
+        class_name: str | None = None,
+    ) -> dict[str, object]:
+        """Return one metadata page plus the uncapped filtered total."""
+
+        def _query(session: Session) -> dict[str, object]:
+            conditions = []
+            if review_status:
+                conditions.append(DetectionCapture.review_status == review_status)
+            if class_name:
+                conditions.append(DetectionCapture.class_name == class_name)
+            total = int(
+                session.scalar(
+                    select(func.count()).select_from(DetectionCapture).where(*conditions)
+                )
+                or 0
+            )
+            stmt = (
+                select(DetectionCapture)
+                .where(*conditions)
+                .order_by(DetectionCapture.id.desc())
+                .limit(max(1, min(limit, 200)))
+                .offset(max(0, offset))
+            )
+            return {
+                "items": [_capture_dict(row) for row in session.scalars(stmt).all()],
+                "total": total,
+                "offset": max(0, offset),
+                "limit": max(1, min(limit, 200)),
+            }
+
+        return await run_db(_query)
+
+    async def navigate(
+        self,
+        capture_id: int,
+        *,
+        direction: str,
+        review_status: str | None = None,
+        class_name: str | None = None,
+    ) -> dict[str, object] | None:
+        """Find an adjacent filtered capture by id, independent of page boundaries."""
+        if direction not in {"current", "previous", "next"}:
+            raise ValueError("invalid navigation direction")
+
+        def _query(session: Session) -> dict[str, object] | None:
+            conditions = []
+            if review_status:
+                conditions.append(DetectionCapture.review_status == review_status)
+            if class_name:
+                conditions.append(DetectionCapture.class_name == class_name)
+
+            if direction == "current":
+                target = session.get(DetectionCapture, capture_id)
+            elif direction == "next":
+                target = session.scalar(
+                    select(DetectionCapture)
+                    .where(*conditions, DetectionCapture.id < capture_id)
+                    .order_by(DetectionCapture.id.desc())
+                    .limit(1)
+                )
+            else:
+                target = session.scalar(
+                    select(DetectionCapture)
+                    .where(*conditions, DetectionCapture.id > capture_id)
+                    .order_by(DetectionCapture.id.asc())
+                    .limit(1)
+                )
+            if target is None:
+                return None
+
+            total = int(
+                session.scalar(
+                    select(func.count()).select_from(DetectionCapture).where(*conditions)
+                )
+                or 0
+            )
+            newer = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(DetectionCapture)
+                    .where(*conditions, DetectionCapture.id > target.id)
+                )
+                or 0
+            )
+            older = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(DetectionCapture)
+                    .where(*conditions, DetectionCapture.id < target.id)
+                )
+                or 0
+            )
+            return {
+                "capture": _capture_dict(target),
+                "position": min(newer + 1, total) if total else 0,
+                "total": total,
+                "has_previous": newer > 0,
+                "has_next": older > 0,
+            }
 
         return await run_db(_query)
 

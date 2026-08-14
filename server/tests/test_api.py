@@ -412,6 +412,68 @@ class TestDetectionCaptures:
 
         assert client.delete(f"/api/detection-captures/{capture['id']}").status_code == 204
 
+    def test_capture_paging_and_navigation_are_not_limited_to_one_page(
+        self, client: TestClient
+    ) -> None:
+        captures = []
+        for _ in range(3):
+            deadline = time.monotonic() + 2.0
+            created = client.post("/api/detection-captures/manual")
+            while created.status_code == 503 and time.monotonic() < deadline:
+                time.sleep(0.03)
+                created = client.post("/api/detection-captures/manual")
+            assert created.status_code == 201
+            captures.append(created.json())
+
+        page = client.get(
+            "/api/detection-captures/page",
+            params={
+                "limit": 2,
+                "offset": 0,
+                "review_status": "unreviewed",
+                "class_name": "manual",
+            },
+        )
+        assert page.status_code == 200
+        assert page.json()["total"] == 3
+        assert len(page.json()["items"]) == 2
+
+        newest, middle, oldest = reversed(captures)
+        adjacent = client.get(
+            f"/api/detection-captures/{newest['id']}/navigate",
+            params={
+                "direction": "next",
+                "review_status": "unreviewed",
+                "class_name": "manual",
+            },
+        )
+        assert adjacent.status_code == 200
+        assert adjacent.json()["capture"]["id"] == middle["id"]
+        assert adjacent.json()["position"] == 2
+        assert adjacent.json()["total"] == 3
+
+        assert (
+            client.patch(
+                f"/api/detection-captures/{newest['id']}",
+                json={"review_status": "rejected", "review_label": "not-bird"},
+            ).status_code
+            == 200
+        )
+        compacted = client.get(
+            f"/api/detection-captures/{newest['id']}/navigate",
+            params={
+                "direction": "next",
+                "review_status": "unreviewed",
+                "class_name": "manual",
+            },
+        )
+        assert compacted.json()["capture"]["id"] == middle["id"]
+        assert compacted.json()["position"] == 1
+        assert compacted.json()["total"] == 2
+
+        for capture in (newest, middle, oldest):
+            assert client.delete(f"/api/detection-captures/{capture['id']}").status_code == 204
+
 
 class TestControllerHandshake:
     """A controller connecting must be able to complete a full exchange.

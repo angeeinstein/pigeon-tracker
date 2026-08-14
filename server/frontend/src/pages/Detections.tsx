@@ -15,6 +15,7 @@ import { useAsync } from '../hooks/useAsync';
 
 type StatusFilter = '' | DetectionReviewStatus;
 type Point = [number, number];
+const PAGE_SIZE = 60;
 
 const STATUS_TONE: Record<DetectionReviewStatus, 'idle' | 'good' | 'bad'> = {
   unreviewed: 'idle',
@@ -33,24 +34,40 @@ export default function Detections() {
   const [className, setClassName] = useState('');
   const [busy, setBusy] = useState<number | 'manual' | 'export' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pageOffset, setPageOffset] = useState(0);
   const [viewerCapture, setViewerCapture] = useState<DetectionCapture | null>(null);
+  const [viewerPosition, setViewerPosition] = useState(0);
+  const [viewerTotal, setViewerTotal] = useState(0);
+  const [viewerHasPrevious, setViewerHasPrevious] = useState(false);
+  const [viewerHasNext, setViewerHasNext] = useState(false);
   const captures = useAsync(
     () =>
-      api.detectionCaptures({
-        limit: 500,
+      api.detectionCapturePage({
+        limit: PAGE_SIZE,
+        offset: pageOffset,
         review_status: status || undefined,
         class_name: className.trim() || undefined,
       }),
-    [status, className],
+    [status, className, pageOffset],
   );
 
   useEffect(() => {
     if (!viewerCapture || !captures.data) return;
-    const fresh = captures.data.find((capture) => capture.id === viewerCapture.id);
+    const fresh = captures.data.items.find((capture) => capture.id === viewerCapture.id);
     if (fresh) setViewerCapture(fresh);
     // Only refresh the open record when the server list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captures.data]);
+
+  useEffect(() => {
+    setPageOffset(0);
+  }, [status, className]);
+
+  useEffect(() => {
+    if (!captures.data || captures.data.items.length > 0 || pageOffset === 0) return;
+    const lastPage = Math.max(0, Math.floor((captures.data.total - 1) / PAGE_SIZE) * PAGE_SIZE);
+    if (lastPage !== pageOffset) setPageOffset(lastPage);
+  }, [captures.data, pageOffset]);
 
   async function act(id: number, operation: () => Promise<unknown>) {
     setBusy(id);
@@ -74,6 +91,14 @@ export default function Detections() {
     try {
       const updated = await operation();
       setViewerCapture(updated);
+      const context = await api.navigateDetectionCaptures(updated.id, 'current', {
+        review_status: status || undefined,
+        class_name: className.trim() || undefined,
+      });
+      setViewerPosition(context.position);
+      setViewerTotal(context.total);
+      setViewerHasPrevious(context.has_previous);
+      setViewerHasNext(context.has_next);
       captures.reload();
       return updated;
     } catch (error) {
@@ -90,7 +115,13 @@ export default function Detections() {
     try {
       const capture = await api.saveDetectionCapture();
       setStatus('unreviewed');
+      setClassName('');
+      setPageOffset(0);
       setViewerCapture(capture);
+      setViewerPosition(1);
+      setViewerTotal((captures.data?.total ?? 0) + 1);
+      setViewerHasPrevious(false);
+      setViewerHasNext((captures.data?.total ?? 0) > 0);
       captures.reload();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -119,18 +150,41 @@ export default function Detections() {
     }
   }
 
-  function moveViewer(direction: -1 | 1) {
-    if (!captures.data?.length || !viewerCapture) return;
-    const current = captures.data.findIndex((capture) => capture.id === viewerCapture.id);
-    const next =
-      current < 0 ? (direction > 0 ? 0 : captures.data.length - 1) : current + direction;
-    if (next >= 0 && next < captures.data.length) setViewerCapture(captures.data[next]);
+  async function moveViewer(direction: -1 | 1) {
+    if (!viewerCapture || busy !== null) return;
+    setBusy(viewerCapture.id);
+    setActionError(null);
+    try {
+      const result = await api.navigateDetectionCaptures(
+        viewerCapture.id,
+        direction < 0 ? 'previous' : 'next',
+        {
+          review_status: status || undefined,
+          class_name: className.trim() || undefined,
+        },
+      );
+      setViewerCapture(result.capture);
+      setViewerPosition(result.position);
+      setViewerTotal(result.total);
+      setViewerHasPrevious(result.has_previous);
+      setViewerHasNext(result.has_next);
+      setPageOffset(Math.floor((result.position - 1) / PAGE_SIZE) * PAGE_SIZE);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  const viewerIndex =
-    viewerCapture && captures.data
-      ? captures.data.findIndex((capture) => capture.id === viewerCapture.id)
-      : -1;
+  function openViewer(capture: DetectionCapture, index: number) {
+    const position = pageOffset + index + 1;
+    const total = captures.data?.total ?? 0;
+    setViewerCapture(capture);
+    setViewerPosition(position);
+    setViewerTotal(total);
+    setViewerHasPrevious(position > 1);
+    setViewerHasNext(position < total);
+  }
 
   return (
     <div className="space-y-4">
@@ -159,6 +213,10 @@ export default function Detections() {
           Open a capture to review each proposed box. Accepted bird boxes become training labels;
           rejected boxes remain as evidence but are excluded from the exported dataset.
         </p>
+        <p className="mb-3 text-xs text-muted">
+          The viewer counter covers the complete filtered queue. In “needs box review,” completing
+          an image removes it from that queue, so the next image may take the same position number.
+        </p>
         <div className="flex flex-wrap gap-2">
           <select
             className="field max-w-[12rem]"
@@ -186,18 +244,18 @@ export default function Detections() {
       {captures.loading && !captures.data && <Spinner />}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {captures.data?.map((capture) => (
+        {captures.data?.items.map((capture, index) => (
           <CaptureCard
             key={capture.id}
             capture={capture}
             disabled={busy !== null}
-            onOpen={() => setViewerCapture(capture)}
+            onOpen={() => openViewer(capture, index)}
             onDelete={() => act(capture.id, () => api.deleteDetectionCapture(capture.id))}
           />
         ))}
       </div>
 
-      {!captures.loading && captures.data?.length === 0 && (
+      {!captures.loading && captures.data?.items.length === 0 && (
         <Card>
           <p className="py-6 text-center text-sm text-muted">
             No captures match these filters yet.
@@ -205,17 +263,39 @@ export default function Detections() {
         </Card>
       )}
 
+      {captures.data && captures.data.total > 0 && (
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <button
+            className="btn px-3 py-1.5 text-xs"
+            disabled={pageOffset === 0 || captures.loading}
+            onClick={() => setPageOffset(Math.max(0, pageOffset - PAGE_SIZE))}
+          >
+            Previous page
+          </button>
+          <span className="text-xs text-muted">
+            {pageOffset + 1}-{pageOffset + captures.data.items.length} of {captures.data.total}
+          </span>
+          <button
+            className="btn px-3 py-1.5 text-xs"
+            disabled={pageOffset + captures.data.items.length >= captures.data.total || captures.loading}
+            onClick={() => setPageOffset(pageOffset + PAGE_SIZE)}
+          >
+            Next page
+          </button>
+        </div>
+      )}
+
       {viewerCapture && (
         <CaptureReviewer
           capture={viewerCapture}
           busy={busy !== null}
           error={actionError}
-          position={viewerIndex >= 0 ? `${viewerIndex + 1} / ${captures.data?.length ?? 0}` : ''}
-          canPrevious={viewerIndex > 0}
-          canNext={viewerIndex < (captures.data?.length ?? 0) - 1 || viewerIndex < 0}
+          position={`${viewerPosition} / ${viewerTotal}`}
+          canPrevious={viewerHasPrevious}
+          canNext={viewerHasNext}
           onClose={() => setViewerCapture(null)}
-          onPrevious={() => moveViewer(-1)}
-          onNext={() => moveViewer(1)}
+          onPrevious={() => void moveViewer(-1)}
+          onNext={() => void moveViewer(1)}
           onReview={(index, reviewStatus) =>
             updateViewer(() =>
               api.reviewDetectionAnnotation(
@@ -442,8 +522,8 @@ function CaptureReviewer({
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, select')) return;
       const key = event.key.toLowerCase();
-      if (key === 'arrowleft') onPrevious();
-      else if (key === 'arrowright') onNext();
+      if (key === 'arrowleft' && canPrevious) onPrevious();
+      else if (key === 'arrowright' && canNext) onNext();
       else if (key === 'a' || key === 'enter') void reviewSelected('accepted');
       else if (key === 'x') void reviewSelected('rejected');
       else if (key === 'u') void reviewSelected('unreviewed');

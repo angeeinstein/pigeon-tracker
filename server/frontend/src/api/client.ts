@@ -10,6 +10,8 @@ import type {
   CalibrationPoint,
   CameraStatus,
   DetectionCapture,
+  DetectionCaptureNavigation,
+  DetectionCapturePage,
   DetectionReviewStatus,
   DetectorCatalog,
   EventRecord,
@@ -215,6 +217,33 @@ export const api = {
     if (params.review_status) query.set('review_status', params.review_status);
     if (params.class_name) query.set('class_name', params.class_name);
     return request<DetectionCapture[]>(`/api/detection-captures?${query.toString()}`);
+  },
+  detectionCapturePage: (
+    params: {
+      limit?: number;
+      offset?: number;
+      review_status?: DetectionReviewStatus;
+      class_name?: string;
+    } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.offset) query.set('offset', String(params.offset));
+    if (params.review_status) query.set('review_status', params.review_status);
+    if (params.class_name) query.set('class_name', params.class_name);
+    return request<DetectionCapturePage>(`/api/detection-captures/page?${query.toString()}`);
+  },
+  navigateDetectionCaptures: (
+    captureId: number,
+    direction: 'current' | 'previous' | 'next',
+    params: { review_status?: DetectionReviewStatus; class_name?: string } = {},
+  ) => {
+    const query = new URLSearchParams({ direction });
+    if (params.review_status) query.set('review_status', params.review_status);
+    if (params.class_name) query.set('class_name', params.class_name);
+    return request<DetectionCaptureNavigation>(
+      `/api/detection-captures/${captureId}/navigate?${query.toString()}`,
+    );
   },
   saveDetectionCapture: () => post<DetectionCapture>('/api/detection-captures/manual'),
   reviewDetectionCapture: (

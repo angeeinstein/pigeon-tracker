@@ -122,6 +122,21 @@ export interface DetectionCapture {
   updated_at: string;
 }
 
+export interface DetectionCapturePage {
+  items: DetectionCapture[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface DetectionCaptureNavigation {
+  capture: DetectionCapture;
+  position: number;
+  total: number;
+  has_previous: boolean;
+  has_next: boolean;
+}
+
 export interface CalibrationPoint {
   id: number;
   camera_id: string;

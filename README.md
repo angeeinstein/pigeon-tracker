@@ -26,7 +26,7 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 | Part                                                 | State                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 198 tests pass; running on a real LXC          |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 199 tests pass; running on a real LXC          |
 | Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
 | YOLO detection                                        | Model loads and runs (73 ms/frame at 640 px, 2 vCPU CPU-only) |
@@ -174,7 +174,7 @@ valve. The command-line simulator remains useful for network-protocol tests and
 failure injection such as `--fail-homing`.
 
 ```bash
-pytest                                   # 198 tests, ~3 s
+pytest                                   # 199 tests, ~3 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current

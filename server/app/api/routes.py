@@ -694,6 +694,23 @@ async def list_detection_captures(
     )
 
 
+@router.get("/detection-captures/page")
+async def page_detection_captures(
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+    limit: int = Query(default=60, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    review_status: Literal["unreviewed", "training", "rejected"] | None = None,
+    class_name: str | None = Query(default=None, max_length=128),
+) -> dict[str, object]:
+    return await runtime.detection_captures.page(
+        limit=limit,
+        offset=offset,
+        review_status=review_status,
+        class_name=class_name,
+    )
+
+
 @router.post("/detection-captures/manual", status_code=status.HTTP_201_CREATED)
 async def save_manual_detection_capture(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, object]:
     capture = await runtime.save_manual_detection_capture()
@@ -717,6 +734,26 @@ async def review_detection_capture(
     if capture is None:
         raise HTTPException(status_code=404, detail="detection capture not found")
     return capture
+
+
+@router.get("/detection-captures/{capture_id}/navigate")
+async def navigate_detection_captures(
+    capture_id: int,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+    direction: Literal["current", "previous", "next"] = "current",
+    review_status: Literal["unreviewed", "training", "rejected"] | None = None,
+    class_name: str | None = Query(default=None, max_length=128),
+) -> dict[str, object]:
+    result = await runtime.detection_captures.navigate(
+        capture_id,
+        direction=direction,
+        review_status=review_status,
+        class_name=class_name,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="no matching detection capture")
+    return result
 
 
 @router.patch("/detection-captures/{capture_id}/annotations/{annotation_index}")
