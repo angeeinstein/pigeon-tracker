@@ -7,7 +7,10 @@ fresh install will at least come up and be controllable.
 
 from __future__ import annotations
 
+import io
+import json
 import time
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -351,6 +354,63 @@ class TestDetectionCaptures:
 
         assert client.delete(f"/api/detection-captures/{capture['id']}").status_code == 204
         assert client.get(f"/api/detection-captures/{capture['id']}/image").status_code == 404
+
+    def test_box_review_manual_annotation_and_yolo_export(self, client: TestClient) -> None:
+        deadline = time.monotonic() + 2.0
+        created = client.post("/api/detection-captures/manual")
+        while created.status_code == 503 and time.monotonic() < deadline:
+            time.sleep(0.03)
+            created = client.post("/api/detection-captures/manual")
+        assert created.status_code == 201
+        capture = created.json()
+
+        added = client.post(
+            f"/api/detection-captures/{capture['id']}/annotations",
+            json={"bbox": [10, 20, 110, 220], "class_name": "bird"},
+        )
+        assert added.status_code == 201
+        annotation = added.json()["detections"][0]
+        assert annotation["source"] == "manual"
+        assert annotation["review_status"] == "accepted"
+        assert added.json()["review_status"] == "training"
+
+        reset = client.patch(
+            f"/api/detection-captures/{capture['id']}/annotations/0",
+            json={"review_status": "unreviewed", "review_label": ""},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["review_status"] == "unreviewed"
+
+        accepted = client.patch(
+            f"/api/detection-captures/{capture['id']}/annotations/0",
+            json={"review_status": "accepted", "review_label": "bird"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["review_status"] == "training"
+
+        exported = client.get("/api/detection-captures/export/yolo.zip")
+        assert exported.status_code == 200
+        assert exported.headers["content-type"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+            names = archive.namelist()
+            label_name = next(
+                name for name in names if name.endswith(".txt") and "/labels/" in name
+            )
+            label = archive.read(label_name).decode().strip().split()
+            assert label[0] == "0"
+            assert len(label) == 5
+            manifest = json.loads(archive.read("pigeon-dataset/manifest.json"))
+            assert manifest["captures"][0]["accepted_boxes"][0]["review_label"] == "bird"
+            assert "pigeon-dataset/dataset.yaml" in names
+
+        rejected = client.patch(
+            f"/api/detection-captures/{capture['id']}",
+            json={"review_status": "rejected", "review_label": "not-bird"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["detections"][0]["review_status"] == "rejected"
+
+        assert client.delete(f"/api/detection-captures/{capture['id']}").status_code == 204
 
 
 class TestControllerHandshake:

@@ -26,7 +26,7 @@ RTSP camera ─► latest-frame buffer ─► detector ─► tracker ─► tar
 
 | Part                                                 | State                                                   |
 | ---------------------------------------------------- | ------------------------------------------------------- |
-| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 180 tests pass; running on a real LXC          |
+| Server (FastAPI, vision, targeting, API, WebSockets)  | Working; 198 tests pass; running on a real LXC          |
 | Web UI (React + TypeScript + Vite + Tailwind)         | Builds; desktop/mobile browser review complete          |
 | Installer / systemd unit                              | Verified on Ubuntu 24.04 LXC: install, update, reboot   |
 | YOLO detection                                        | Model loads and runs (73 ms/frame at 640 px, 2 vCPU CPU-only) |
@@ -134,10 +134,13 @@ systemctl restart turret-control
    explicitly if they were previously `auto` / 640. Class selectors use the
    vocabulary reported by the active model and flag names that the model does
    not provide; changing models preserves the selection for explicit review.
-7. **Detections**: review the raw evidence frames, confirm useful bird examples,
-   reject false positives, or save the current frame manually when a visible
-   bird was missed. Confirmed training images are protected from automatic
-   retention cleanup.
+7. **Detections**: open a frame in the annotation viewer and review each model
+   box as a correct bird or a false proposal. Keyboard shortcuts make it quick
+   to move through boxes and frames. Draw a missing bird box on manual or
+   automatic captures, and mark bird-free frames as negative examples. Fully
+   reviewed positives are protected from retention. **Export YOLO dataset**
+   downloads the reviewed JPEGs, YOLO labels, episode-aware train/validation
+   split, dataset YAML, and an audit manifest; original proposals remain stored.
 8. Only then: enable water output, arm, and turn on automatic targeting.
 
 A fresh install is disarmed with water output disabled. It stays that way until
@@ -171,7 +174,7 @@ valve. The command-line simulator remains useful for network-protocol tests and
 failure injection such as `--fail-homing`.
 
 ```bash
-pytest                                   # 180 tests, ~2 s
+pytest                                   # 198 tests, ~3 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current

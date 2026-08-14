@@ -91,6 +91,17 @@ export interface EventRecord {
 }
 
 export type DetectionReviewStatus = 'unreviewed' | 'training' | 'rejected';
+export type DetectionAnnotationStatus = 'unreviewed' | 'accepted' | 'rejected';
+
+export interface DetectionAnnotation {
+  bbox: [number, number, number, number];
+  confidence: number | null;
+  class_id: number | null;
+  class_name: string;
+  source: 'proposal' | 'manual';
+  review_status: DetectionAnnotationStatus;
+  review_label: string;
+}
 
 export interface DetectionCapture {
   id: number;
@@ -104,12 +115,7 @@ export interface DetectionCapture {
   frame_height: number;
   model_name: string;
   image_name: string;
-  detections: Array<{
-    bbox: [number, number, number, number];
-    confidence: number;
-    class_id: number;
-    class_name: string;
-  }>;
+  detections: DetectionAnnotation[];
   settings: Record<string, unknown>;
   review_status: DetectionReviewStatus;
   review_label: string;

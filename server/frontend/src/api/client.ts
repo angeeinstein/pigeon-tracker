@@ -84,6 +84,26 @@ const post = <T>(path: string, body?: unknown, timeoutMs?: number) =>
     timeoutMs,
   );
 
+async function download(path: string): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(path, { credentials: 'same-origin' });
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(detail, response.status);
+  }
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? 'pigeon-dataset.zip',
+  };
+}
+
 export const api = {
   health: () => request<Health>('/api/health'),
   system: () => request<Record<string, unknown>>('/api/system'),
@@ -206,6 +226,38 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ review_status, review_label }),
     }),
+  reviewDetectionAnnotation: (
+    captureId: number,
+    annotationIndex: number,
+    review_status: 'unreviewed' | 'accepted' | 'rejected',
+    review_label = '',
+  ) =>
+    request<DetectionCapture>(
+      `/api/detection-captures/${captureId}/annotations/${annotationIndex}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ review_status, review_label }),
+      },
+    ),
+  addDetectionAnnotation: (
+    captureId: number,
+    bbox: [number, number, number, number],
+    class_name = 'bird',
+  ) =>
+    post<DetectionCapture>(`/api/detection-captures/${captureId}/annotations`, {
+      bbox,
+      class_name,
+    }),
+  deleteDetectionAnnotation: (captureId: number, annotationIndex: number) =>
+    request<DetectionCapture>(
+      `/api/detection-captures/${captureId}/annotations/${annotationIndex}`,
+      { method: 'DELETE' },
+    ),
+  rejectUnreviewedDetectionAnnotations: (captureId: number) =>
+    post<DetectionCapture>(
+      `/api/detection-captures/${captureId}/annotations/reject-unreviewed`,
+    ),
+  downloadDetectionDataset: () => download('/api/detection-captures/export/yolo.zip'),
   deleteDetectionCapture: (id: number) =>
     request<void>(`/api/detection-captures/${id}`, { method: 'DELETE' }),
   detectionCaptureImage: (id: number) => `/api/detection-captures/${id}/image`,

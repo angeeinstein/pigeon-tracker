@@ -1,0 +1,91 @@
+"""Per-box evidence review and capture-level completion rules."""
+
+from pathlib import Path
+
+import numpy as np
+
+from app.services.detection_capture import DetectionCaptureStore, _episode_splits
+from app.vision.detector import Detection
+
+
+def proposal(class_name: str, confidence: float, offset: float) -> Detection:
+    return Detection(
+        x1=10 + offset,
+        y1=20 + offset,
+        x2=110 + offset,
+        y2=220 + offset,
+        confidence=confidence,
+        class_id=14 if class_name == "bird" else 0,
+        class_name=class_name,
+    )
+
+
+async def test_capture_completes_only_after_every_box_is_reviewed(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    capture = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=1,
+        detections=[proposal("bird", 0.8, 0), proposal("person", 0.2, 150)],
+        class_name="bird",
+        confidence=0.8,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+
+    assert [item["review_status"] for item in capture["detections"]] == [
+        "unreviewed",
+        "unreviewed",
+    ]
+    capture_id = int(capture["id"])
+
+    partly_reviewed = await store.review_annotation(
+        capture_id, 0, review_status="accepted", review_label="bird"
+    )
+    assert partly_reviewed is not None
+    assert partly_reviewed["review_status"] == "unreviewed"
+
+    completed = await store.review_annotation(
+        capture_id, 1, review_status="rejected", review_label=""
+    )
+    assert completed is not None
+    assert completed["review_status"] == "training"
+    assert completed["review_label"] == "bird"
+
+
+async def test_all_rejected_boxes_make_a_negative_capture(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    capture = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=2,
+        detections=[proposal("airplane", 0.15, 0)],
+        class_name="airplane",
+        confidence=0.15,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+
+    completed = await store.reject_unreviewed_annotations(int(capture["id"]))
+    assert completed is not None
+    assert completed["review_status"] == "rejected"
+    assert completed["review_label"] == "not-bird"
+
+
+def test_dataset_split_keeps_adjacent_camera_frames_together() -> None:
+    rows = [
+        {"id": 1, "camera_id": "overview", "ts": "2026-08-14T10:00:00+00:00"},
+        {"id": 2, "camera_id": "overview", "ts": "2026-08-14T10:00:10+00:00"},
+        {"id": 3, "camera_id": "overview", "ts": "2026-08-14T12:00:00+00:00"},
+    ]
+
+    splits = _episode_splits(rows)
+
+    assert splits[1] == splits[2]
+    assert set(splits.values()) == {"train", "val"}

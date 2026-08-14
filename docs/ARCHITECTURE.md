@@ -64,6 +64,12 @@ event loop stays responsive; the ML runtimes release the GIL during inference.
 2. **Detection** — `VisionPipeline` ticks at `detector.fps`, grabs the newest
    frame, runs the detector in a worker thread, feeds detections to the
    tracker, and publishes a `VisionResult` (tracks + timing) to subscribers.
+   Evidence frames keep the immutable source JPEG and original proposals.
+   Per-box review metadata is stored alongside each proposal: accepted bird
+   boxes become positive labels, rejected boxes remain auditable, and fully
+   rejected frames become negative examples. Manual boxes cover detector
+   misses. Dataset export writes YOLO labels plus a manifest and keeps adjacent
+   camera episodes in the same train/validation partition to reduce leakage.
 3. **Targeting** — `TargetingEngine` consumes `VisionResult`s, applies zone
    rules and the selection policy, maps the chosen aim point to pan/tilt with
    the calibration model, and runs the state machine that decides whether to

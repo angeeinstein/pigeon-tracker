@@ -14,6 +14,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from app.api.auth import SESSION_COOKIE, check_credentials, create_token
 from app.api.deps import AuthDep, ConfigDep, RuntimeDep
@@ -664,6 +665,18 @@ class DetectionCaptureReviewRequest(BaseModel):
     review_label: str = Field(default="", max_length=128)
 
 
+class DetectionAnnotationReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    review_status: Literal["unreviewed", "accepted", "rejected"]
+    review_label: str = Field(default="", max_length=128)
+
+
+class DetectionAnnotationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bbox: tuple[float, float, float, float]
+    class_name: str = Field(default="bird", min_length=1, max_length=128)
+
+
 @router.get("/detection-captures")
 async def list_detection_captures(
     runtime: RuntimeDep,
@@ -704,6 +717,94 @@ async def review_detection_capture(
     if capture is None:
         raise HTTPException(status_code=404, detail="detection capture not found")
     return capture
+
+
+@router.patch("/detection-captures/{capture_id}/annotations/{annotation_index}")
+async def review_detection_annotation(
+    capture_id: int,
+    annotation_index: int,
+    payload: DetectionAnnotationReviewRequest,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, object]:
+    try:
+        capture = await runtime.detection_captures.review_annotation(
+            capture_id,
+            annotation_index,
+            review_status=payload.review_status,
+            review_label=payload.review_label,
+        )
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if capture is None:
+        raise HTTPException(status_code=404, detail="detection capture not found")
+    return capture
+
+
+@router.post("/detection-captures/{capture_id}/annotations", status_code=status.HTTP_201_CREATED)
+async def add_detection_annotation(
+    capture_id: int,
+    payload: DetectionAnnotationCreateRequest,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, object]:
+    try:
+        capture = await runtime.detection_captures.add_annotation(
+            capture_id,
+            bbox=list(payload.bbox),
+            class_name=payload.class_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if capture is None:
+        raise HTTPException(status_code=404, detail="detection capture not found")
+    return capture
+
+
+@router.delete("/detection-captures/{capture_id}/annotations/{annotation_index}")
+async def delete_detection_annotation(
+    capture_id: int,
+    annotation_index: int,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, object]:
+    try:
+        capture = await runtime.detection_captures.delete_annotation(capture_id, annotation_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if capture is None:
+        raise HTTPException(status_code=404, detail="detection capture not found")
+    return capture
+
+
+@router.post("/detection-captures/{capture_id}/annotations/reject-unreviewed")
+async def reject_unreviewed_detection_annotations(
+    capture_id: int, runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, object]:
+    capture = await runtime.detection_captures.reject_unreviewed_annotations(capture_id)
+    if capture is None:
+        raise HTTPException(status_code=404, detail="detection capture not found")
+    return capture
+
+
+@router.get("/detection-captures/export/yolo.zip")
+async def export_detection_captures(runtime: RuntimeDep, _auth: AuthDep) -> FileResponse:
+    try:
+        path, summary = await runtime.detection_captures.export_yolo()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"pigeon-dataset-{time.strftime('%Y%m%d-%H%M%S')}.zip",
+        headers={
+            "X-Dataset-Images": str(summary["images"]),
+            "X-Dataset-Boxes": str(summary["boxes"]),
+        },
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
 
 
 @router.delete("/detection-captures/{capture_id}", status_code=status.HTTP_204_NO_CONTENT)
