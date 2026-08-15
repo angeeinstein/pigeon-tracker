@@ -110,6 +110,62 @@ async def test_motion_rescan_source_is_preserved_for_review(
     assert capture["detections"][0]["source"] == "motion_rescan"  # type: ignore[index]
 
 
+async def test_legacy_motion_only_capture_is_hidden_from_review_queue(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    raw_motion = proposal("motion", 0.2, 0)
+    raw_motion = Detection(
+        x1=raw_motion.x1,
+        y1=raw_motion.y1,
+        x2=raw_motion.x2,
+        y2=raw_motion.y2,
+        confidence=raw_motion.confidence,
+        class_id=-1,
+        class_name="motion",
+        source="motion",
+    )
+    hidden = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=4,
+        detections=[raw_motion],
+        class_name="motion",
+        confidence=None,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+        trigger="motion-rescan",
+    )
+    visible = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=5,
+        detections=[proposal("bird", 0.2, 0)],
+        class_name="bird",
+        confidence=0.2,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+        trigger="motion-rescan",
+    )
+
+    page = await store.page(review_status="unreviewed")
+    listed = await store.list(review_status="unreviewed")
+    current = await store.navigate(
+        int(visible["id"]), direction="current", review_status="unreviewed"
+    )
+    hidden_current = await store.navigate(
+        int(hidden["id"]), direction="current", review_status="unreviewed"
+    )
+
+    assert page["total"] == 1
+    assert [item["id"] for item in page["items"]] == [visible["id"]]  # type: ignore[index]
+    assert [item["id"] for item in listed] == [visible["id"]]
+    assert current is not None and current["total"] == 1
+    assert hidden_current is None
+
+
 def test_dataset_split_keeps_adjacent_camera_frames_together() -> None:
     rows = [
         {"id": 1, "camera_id": "overview", "ts": "2026-08-14T10:00:00+00:00"},

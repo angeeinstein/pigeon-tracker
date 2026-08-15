@@ -172,3 +172,26 @@ async def test_motion_crop_rescan_uses_native_pixels_and_stays_evidence_only() -
     assert (
         detector.infer.call_args.kwargs["min_confidence"] == settings.scene_motion.rescan_confidence
     )
+
+
+@pytest.mark.asyncio
+async def test_motion_without_model_detection_does_not_create_review_evidence() -> None:
+    settings = AppSettings()
+    # This may still be true in settings saved by an older release. It must no
+    # longer turn a raw foreground region into a manual-review annotation.
+    settings.scene_motion.save_motion_evidence = True
+    pipeline = VisionPipeline(Mock(), settings, Path("."), force_mock=True)
+    frame = Frame(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        native_image=np.zeros((1080, 1920, 3), dtype=np.uint8),
+        seq=8,
+        ts=11.0,
+        wall_ts=21.0,
+        camera_id="overview",
+    )
+    detector = Mock()
+    detector.infer.return_value = []
+
+    evidence = await pipeline._rescan_motion(detector, frame, [_region()])
+
+    assert evidence is None

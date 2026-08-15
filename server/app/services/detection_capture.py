@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, select
 from sqlalchemy.orm import Session
 
 from app.camera.rtsp import encode_jpeg, safe_filename
@@ -25,6 +25,31 @@ from app.vision.detector import Detection
 
 REVIEW_STATUSES = ("unreviewed", "training", "rejected")
 ANNOTATION_STATUSES = ("unreviewed", "accepted", "rejected")
+
+
+def _review_queue_conditions(
+    review_status: str | None,
+    class_name: str | None,
+) -> list[Any]:
+    """Build filters for captures that represent model or manual evidence.
+
+    Older releases stored raw foreground regions as ``motion`` annotations.
+    They are model-input hints rather than object labels, so keep those legacy
+    records on disk but out of every manual-review listing.
+    """
+    conditions = [
+        not_(
+            and_(
+                DetectionCapture.trigger == "motion-rescan",
+                DetectionCapture.class_name == "motion",
+            )
+        )
+    ]
+    if review_status:
+        conditions.append(DetectionCapture.review_status == review_status)
+    if class_name:
+        conditions.append(DetectionCapture.class_name == class_name)
+    return conditions
 
 
 def _normalise_annotation(raw: dict[str, Any]) -> dict[str, Any]:
@@ -131,11 +156,12 @@ class DetectionCaptureStore:
         class_name: str | None = None,
     ) -> list[dict[str, object]]:
         def _query(session: Session) -> list[dict[str, object]]:
-            stmt = select(DetectionCapture).order_by(DetectionCapture.id.desc())
-            if review_status:
-                stmt = stmt.where(DetectionCapture.review_status == review_status)
-            if class_name:
-                stmt = stmt.where(DetectionCapture.class_name == class_name)
+            conditions = _review_queue_conditions(review_status, class_name)
+            stmt = (
+                select(DetectionCapture)
+                .where(*conditions)
+                .order_by(DetectionCapture.id.desc())
+            )
             stmt = stmt.limit(max(1, min(limit, 500))).offset(max(0, offset))
             return [_capture_dict(row) for row in session.scalars(stmt).all()]
 
@@ -152,11 +178,7 @@ class DetectionCaptureStore:
         """Return one metadata page plus the uncapped filtered total."""
 
         def _query(session: Session) -> dict[str, object]:
-            conditions = []
-            if review_status:
-                conditions.append(DetectionCapture.review_status == review_status)
-            if class_name:
-                conditions.append(DetectionCapture.class_name == class_name)
+            conditions = _review_queue_conditions(review_status, class_name)
             total = int(
                 session.scalar(
                     select(func.count()).select_from(DetectionCapture).where(*conditions)
@@ -192,14 +214,14 @@ class DetectionCaptureStore:
             raise ValueError("invalid navigation direction")
 
         def _query(session: Session) -> dict[str, object] | None:
-            conditions = []
-            if review_status:
-                conditions.append(DetectionCapture.review_status == review_status)
-            if class_name:
-                conditions.append(DetectionCapture.class_name == class_name)
+            conditions = _review_queue_conditions(review_status, class_name)
 
             if direction == "current":
-                target = session.get(DetectionCapture, capture_id)
+                target = session.scalar(
+                    select(DetectionCapture)
+                    .where(*conditions, DetectionCapture.id == capture_id)
+                    .limit(1)
+                )
             elif direction == "next":
                 target = session.scalar(
                     select(DetectionCapture)

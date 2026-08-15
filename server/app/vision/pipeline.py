@@ -35,7 +35,7 @@ ResultListener = Callable[["VisionResult"], Awaitable[None]]
 
 @dataclass
 class MotionEvidence:
-    """Native source frame and boxes produced by one motion crop-rescan tick."""
+    """Native source frame and model boxes produced by a motion crop rescan."""
 
     image: np.ndarray = field(repr=False)
     detections: list[Detection] = field(default_factory=list)
@@ -417,6 +417,7 @@ class VisionPipeline:
         wanted = {name.casefold() for name in cfg.rescan_classes}
         evidence_boxes: list[Detection] = []
         best_confidence: float | None = None
+        best_class_name = ""
         elapsed_ms = 0.0
 
         for region in regions:
@@ -456,36 +457,17 @@ class VisionPipeline:
                         source="motion_rescan",
                     )
                     evidence_boxes.append(mapped)
-                    best_confidence = max(best_confidence or 0.0, item.confidence)
-            elif cfg.save_motion_evidence:
-                mx1, my1, mx2, my2 = _map_region_to_native(
-                    region,
-                    display_width=frame.width,
-                    display_height=frame.height,
-                    native_width=int(native.shape[1]),
-                    native_height=int(native.shape[0]),
-                )
-                evidence_boxes.append(
-                    Detection(
-                        x1=mx1,
-                        y1=my1,
-                        x2=mx2,
-                        y2=my2,
-                        confidence=region.score,
-                        class_id=-1,
-                        class_name="motion",
-                        source="motion",
-                    )
-                )
+                    if best_confidence is None or item.confidence > best_confidence:
+                        best_confidence = item.confidence
+                        best_class_name = item.class_name
 
         if not evidence_boxes:
             return None
-        class_name = "bird" if best_confidence is not None else "motion"
         return MotionEvidence(
             image=native,
             detections=evidence_boxes,
             regions=regions,
-            class_name=class_name,
+            class_name=best_class_name,
             confidence=best_confidence,
             rescan_ms=elapsed_ms,
         )

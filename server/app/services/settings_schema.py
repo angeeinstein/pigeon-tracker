@@ -171,7 +171,10 @@ class SceneMotionSettings(BaseModel):
     #: A region must be absent this long before it becomes a new event.
     event_rearm_s: float = Field(default=2.0, ge=0.2, le=120.0)
     max_regions: int = Field(default=3, ge=1, le=16)
-    save_motion_evidence: bool = True
+    # Retained so existing settings files continue to load. Motion-only
+    # captures are no longer persisted because an unlabeled foreground region
+    # is an internal rescan hint, not a reviewable model proposal.
+    save_motion_evidence: bool = False
 
     @model_validator(mode="after")
     def _check_ranges(self) -> SceneMotionSettings:

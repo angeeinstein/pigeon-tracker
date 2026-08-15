@@ -92,7 +92,7 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
     'Minimum crop width': 'min_crop_width_ratio', 'Rescan confidence': 'rescan_confidence',
     'Rescan classes': 'rescan_classes', 'Rescan interval': 'rescan_interval_s',
     'Maximum rescans per event': 'max_rescans_per_event', 'Event re-arm': 'event_rearm_s',
-    'Maximum simultaneous regions': 'max_regions', 'Save motion-only evidence': 'save_motion_evidence',
+    'Maximum simultaneous regions': 'max_regions',
   },
   motion: {
     'Pan minimum': 'pan_min_deg', 'Pan maximum': 'pan_max_deg', 'Tilt minimum': 'tilt_min_deg',
@@ -965,12 +965,6 @@ function Fields({
             checked={value.enabled}
             onChange={(v) => update({ enabled: v })}
             hint="Runs continuously beside normal full-frame AI inference. Motion itself never targets or sprays."
-          />
-          <Toggle
-            label="Save motion-only evidence"
-            checked={value.save_motion_evidence}
-            onChange={(v) => update({ save_motion_evidence: v })}
-            hint="Store rescanned motion even when the second pass still finds no bird."
           />
           <NumberField
             label="Processing width"

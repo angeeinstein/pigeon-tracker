@@ -259,11 +259,7 @@ class Runtime:
 
         await self.events.emit(
             ev.CAT_DETECTION,
-            (
-                "bird found by motion rescan"
-                if evidence.class_name == "bird"
-                else "motion rescan saved"
-            ),
+            f"{evidence.class_name} found by motion rescan",
             data={
                 "camera_id": result.camera_id,
                 "frame_seq": result.frame_seq,
