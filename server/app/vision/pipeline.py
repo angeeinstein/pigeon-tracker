@@ -369,6 +369,7 @@ class VisionPipeline:
                     region,
                     proposals,
                     self._settings.scene_motion.rescan_classes,
+                    min_confidence=self._settings.scene_motion.rescan_confidence,
                 )
             ]
             due = self._scene_motion.claim_rescans(unexplained, frame.ts)
@@ -509,10 +510,16 @@ def _motion_region_has_detection(
     region: MotionRegion,
     detections: list[Detection],
     class_names: list[str],
+    *,
+    min_confidence: float = 0.0,
 ) -> bool:
     wanted = {name.casefold() for name in class_names}
     region_area = max(1.0, region.width * region.height)
     for detection in detections:
+        # A weak full-frame proposal is exactly where the native crop can add
+        # useful resolution. Do not let it suppress the guided second pass.
+        if detection.confidence < min_confidence:
+            continue
         if wanted and detection.class_name.casefold() not in wanted:
             continue
         x1 = max(region.x1, detection.x1)

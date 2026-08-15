@@ -11,7 +11,7 @@ import pytest
 from app.camera.base import Frame
 from app.services.settings_schema import AppSettings, SceneMotionSettings
 from app.vision.detector import Detection
-from app.vision.pipeline import VisionPipeline, _native_crop_bounds
+from app.vision.pipeline import VisionPipeline, _motion_region_has_detection, _native_crop_bounds
 from app.vision.scene_motion import MotionRegion, SceneMotionDetector, _Event
 
 
@@ -112,6 +112,34 @@ def test_native_crop_maps_display_region_and_adds_context() -> None:
     assert x1 < 1200 < 1500 < x2
     assert y1 < 600 < 900 < y2
     assert x2 - x1 >= round(3840 * 0.18)
+
+
+def test_weak_full_frame_proposal_does_not_suppress_motion_rescan() -> None:
+    weak = Detection(
+        x1=410,
+        y1=210,
+        x2=490,
+        y2=290,
+        confidence=0.06,
+        class_id=14,
+        class_name="bird",
+    )
+    strong = Detection(
+        x1=weak.x1,
+        y1=weak.y1,
+        x2=weak.x2,
+        y2=weak.y2,
+        confidence=0.3,
+        class_id=weak.class_id,
+        class_name=weak.class_name,
+    )
+
+    assert not _motion_region_has_detection(
+        _region(), [weak], ["bird"], min_confidence=0.15
+    )
+    assert _motion_region_has_detection(
+        _region(), [strong], ["bird"], min_confidence=0.15
+    )
 
 
 def test_frame_exposes_native_image_without_changing_normal_image() -> None:

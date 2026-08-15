@@ -125,7 +125,7 @@ async def test_legacy_motion_only_capture_is_hidden_from_review_queue(
         class_name="motion",
         source="motion",
     )
-    hidden = await store.create(
+    await store.create(
         image=np.zeros((360, 640, 3), dtype=np.uint8),
         camera_id="overview",
         frame_seq=4,
@@ -155,15 +155,56 @@ async def test_legacy_motion_only_capture_is_hidden_from_review_queue(
     current = await store.navigate(
         int(visible["id"]), direction="current", review_status="unreviewed"
     )
-    hidden_current = await store.navigate(
-        int(hidden["id"]), direction="current", review_status="unreviewed"
-    )
 
     assert page["total"] == 1
     assert [item["id"] for item in page["items"]] == [visible["id"]]  # type: ignore[index]
     assert [item["id"] for item in listed] == [visible["id"]]
     assert current is not None and current["total"] == 1
-    assert hidden_current is None
+
+
+async def test_current_navigation_survives_capture_leaving_review_filter(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    older = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=6,
+        detections=[proposal("bird", 0.2, 0)],
+        class_name="bird",
+        confidence=0.2,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+    current = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=7,
+        detections=[proposal("bird", 0.2, 0)],
+        class_name="bird",
+        confidence=0.2,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+    await store.update_review(
+        int(current["id"]), review_status="rejected", review_label="not-bird"
+    )
+
+    context = await store.navigate(
+        int(current["id"]), direction="current", review_status="unreviewed"
+    )
+    next_capture = await store.navigate(
+        int(current["id"]), direction="next", review_status="unreviewed"
+    )
+
+    assert context is not None
+    assert context["capture"]["review_status"] == "rejected"  # type: ignore[index]
+    assert context["total"] == 1
+    assert context["has_next"] is True
+    assert next_capture is not None
+    assert next_capture["capture"]["id"] == older["id"]  # type: ignore[index]
 
 
 def test_dataset_split_keeps_adjacent_camera_frames_together() -> None:

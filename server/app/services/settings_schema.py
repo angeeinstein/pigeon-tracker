@@ -163,8 +163,9 @@ class SceneMotionSettings(BaseModel):
     crop_padding_ratio: float = Field(default=1.0, ge=0.0, le=5.0)
     #: Ensure enough visual context even when the changed region is tiny.
     min_crop_width_ratio: float = Field(default=0.18, ge=0.02, le=1.0)
-    #: Crop rescans intentionally look below the normal evidence threshold.
-    rescan_confidence: float = Field(default=0.05, ge=0.01, le=0.99)
+    #: Native crops give small objects more model pixels, so their evidence
+    #: threshold can be stricter than low-confidence full-frame collection.
+    rescan_confidence: float = Field(default=0.15, ge=0.01, le=0.99)
     rescan_classes: list[str] = Field(default_factory=lambda: ["bird"])
     rescan_interval_s: float = Field(default=0.75, ge=0.1, le=60.0)
     max_rescans_per_event: int = Field(default=3, ge=1, le=30)

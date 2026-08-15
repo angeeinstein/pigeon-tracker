@@ -845,11 +845,15 @@ function Fields({
           <NumberField
             label="Capture threshold"
             value={value.capture_confidence}
-            step={0.05}
+            step={0.01}
             min={0.01}
             max={0.99}
             onChange={(v) => update({ capture_confidence: v })}
-            hint="Lower than the tracking threshold so uncertain proposals are preserved."
+            hint={
+              value.capture_confidence < 0.1
+                ? 'Very low full-frame threshold: useful borderline birds are retained, but tiny texture false positives are expected. Try 0.10 and keep the motion-rescan threshold lower.'
+                : 'Full-frame evidence threshold. Keep this above the motion-rescan threshold so motion-guided crops can search more aggressively.'
+            }
           />
           <NumberField
             label="Capture re-arm"
@@ -1082,7 +1086,7 @@ function Fields({
             min={0.01}
             max={0.99}
             onChange={(v) => update({ rescan_confidence: v })}
-            hint="The padded crop gets a lower evidence-only threshold than normal tracking."
+            hint="The native crop gives small objects more pixels. Start around 0.15—usually above the full-frame capture threshold but below tracking confidence."
           />
           <ModelClassField
             label="Rescan classes"

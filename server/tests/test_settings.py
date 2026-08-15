@@ -32,7 +32,11 @@ class TestDefaults:
         assert settings.detector.input_size == 960
         assert settings.detector.capture_confidence < settings.detector.confidence
         assert settings.scene_motion.enabled is True
-        assert settings.scene_motion.rescan_confidence < settings.detector.capture_confidence
+        assert (
+            settings.detector.capture_confidence
+            < settings.scene_motion.rescan_confidence
+            < settings.detector.confidence
+        )
 
     def test_motion_limits_are_validated(self) -> None:
         with pytest.raises(ValueError, match="pan_min_deg"):

@@ -217,11 +217,11 @@ class DetectionCaptureStore:
             conditions = _review_queue_conditions(review_status, class_name)
 
             if direction == "current":
-                target = session.scalar(
-                    select(DetectionCapture)
-                    .where(*conditions, DetectionCapture.id == capture_id)
-                    .limit(1)
-                )
+                # The current capture may just have left the active filter
+                # because the user completed its review. Return it once more
+                # so the client can refresh its state and then navigate from
+                # its id to the next item that still matches the queue.
+                target = session.get(DetectionCapture, capture_id)
             elif direction == "next":
                 target = session.scalar(
                     select(DetectionCapture)
