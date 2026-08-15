@@ -134,14 +134,23 @@ systemctl restart turret-control
    explicitly if they were previously `auto` / 640. Class selectors use the
    vocabulary reported by the active model and flag names that the model does
    not provide; changing models preserves the selection for explicit review.
-7. **Detections**: open a frame in the annotation viewer and review each model
+7. **Settings → Scene motion** continuously learns the static primary-camera
+   background and shows its monochrome foreground mask. Unexplained connected
+   motion gets a generously padded crop from the native camera frame and a
+   lower-threshold, evidence-only AI rescan. These results are saved for review
+   but never enter tracking, targeting or spray. Global exposure changes are
+   rejected, while area, density, speed, persistence, crop padding, event
+   re-arm and per-event rescan limits remain configurable. Normal full-frame
+   detection continues at its configured rate and all normal bird evidence is
+   retained.
+8. **Detections**: open a frame in the annotation viewer and review each model
    box as a correct bird or a false proposal. Keyboard shortcuts make it quick
    to move through boxes and frames. Draw a missing bird box on manual or
    automatic captures, and mark bird-free frames as negative examples. Fully
    reviewed positives are protected from retention. **Export YOLO dataset**
    downloads the reviewed JPEGs, YOLO labels, episode-aware train/validation
    split, dataset YAML, and an audit manifest; original proposals remain stored.
-8. Only then: enable water output, arm, and turn on automatic targeting.
+9. Only then: enable water output, arm, and turn on automatic targeting.
 
 A fresh install is disarmed with water output disabled. It stays that way until
 you deliberately change it.
@@ -174,7 +183,7 @@ valve. The command-line simulator remains useful for network-protocol tests and
 failure injection such as `--fail-homing`.
 
 ```bash
-pytest                                   # 199 tests, ~3 s
+pytest                                   # 209 tests, ~3 s
 ruff check app tools tests && ruff format --check app tools tests
 mypy app
 python tools/gen_protocol_header.py --check   # firmware header is current
@@ -204,9 +213,10 @@ Further reading: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 
 ### Design decisions worth knowing
 
-**Newest frame wins.** `LatestFrameBuffer` holds exactly one frame; a slow
-detector skips frames instead of building a backlog. Each consumer (detector,
-preview, snapshots) pulls at its own rate.
+**Newest frame wins.** `LatestFrameBuffer` holds exactly one published frame; a
+slow detector skips frames instead of building a backlog. The normal image is
+camera-downscaled, while the same slot may retain its native decoded image for
+short-lived motion crop rescans. No native video queue is accumulated.
 
 **One process, one worker.** The server owns live hardware state, so gunicorn
 runs a single uvicorn worker. Two workers would mean two controller links, two

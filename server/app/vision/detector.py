@@ -33,6 +33,8 @@ class Detection:
     confidence: float
     class_id: int
     class_name: str
+    #: Origin of the box in saved evidence. Operational detections use proposal.
+    source: str = "proposal"
 
     @property
     def width(self) -> float:
@@ -59,6 +61,7 @@ class Detection:
             "confidence": round(self.confidence, 3),
             "class_id": self.class_id,
             "class_name": self.class_name,
+            "source": self.source,
         }
 
 
@@ -98,7 +101,7 @@ class Detector(abc.ABC):
         """Load weights/resources. May block. Must be safe to call twice."""
 
     @abc.abstractmethod
-    def infer(self, image: np.ndarray) -> list[Detection]:
+    def infer(self, image: np.ndarray, *, min_confidence: float | None = None) -> list[Detection]:
         """Run detection on a BGR image."""
 
     def close(self) -> None:  # noqa: B027 - optional hook; not every detector holds resources
@@ -140,7 +143,7 @@ class NullDetector(Detector):
         self.status.backend = "none"
         self.status.model = "disabled"
 
-    def infer(self, image: np.ndarray) -> list[Detection]:
+    def infer(self, image: np.ndarray, *, min_confidence: float | None = None) -> list[Detection]:
         return []
 
 
@@ -163,7 +166,7 @@ class MockDetector(Detector):
         self.status.device = "cpu"
         self.status.classes = ["bird"]
 
-    def infer(self, image: np.ndarray) -> list[Detection]:
+    def infer(self, image: np.ndarray, *, min_confidence: float | None = None) -> list[Detection]:
         started = time.perf_counter()
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, self.dark_threshold, 255, cv2.THRESH_BINARY_INV)
@@ -197,9 +200,11 @@ class MockDetector(Detector):
 
         self.status.last_inference_ms = (time.perf_counter() - started) * 1000.0
         self.status.inferences += 1
-        threshold = min(self.settings.capture_confidence, self.settings.confidence)
-        if not self.settings.capture_enabled:
-            threshold = self.settings.confidence
+        threshold = min_confidence
+        if threshold is None:
+            threshold = min(self.settings.capture_confidence, self.settings.confidence)
+            if not self.settings.capture_enabled:
+                threshold = self.settings.confidence
         return self._filter(detections, min_confidence=threshold)
 
 

@@ -25,11 +25,24 @@ from app.camera.manager import CameraManager
 from app.logging_config import get_logger
 from app.services.settings_schema import AppSettings
 from app.vision.detector import Detection, Detector, create_detector
+from app.vision.scene_motion import MotionRegion, SceneMotionDetector
 from app.vision.tracker import ByteTracker, Track, create_tracker
 
 log = get_logger(__name__)
 
 ResultListener = Callable[["VisionResult"], Awaitable[None]]
+
+
+@dataclass
+class MotionEvidence:
+    """Native source frame and boxes produced by one motion crop-rescan tick."""
+
+    image: np.ndarray = field(repr=False)
+    detections: list[Detection] = field(default_factory=list)
+    regions: list[MotionRegion] = field(default_factory=list)
+    class_name: str = "motion"
+    confidence: float | None = None
+    rescan_ms: float = 0.0
 
 
 @dataclass
@@ -53,6 +66,9 @@ class VisionResult:
     #: The exact source frame. Kept out of serialised payloads and used by
     #: evidence listeners immediately after inference.
     image: np.ndarray | None = field(default=None, repr=False)
+    #: Optional native-resolution evidence from motion-guided crop inference.
+    #: It is never supplied to the tracker or target selector.
+    motion_evidence: MotionEvidence | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +82,10 @@ class VisionResult:
             "tracks": [t.as_dict() for t in self.tracks],
             "inference_ms": round(self.inference_ms, 1),
             "total_ms": round(self.total_ms, 1),
+            "motion_rescans": len(self.motion_evidence.regions) if self.motion_evidence else 0,
+            "motion_rescan_ms": (
+                round(self.motion_evidence.rescan_ms, 1) if self.motion_evidence else 0.0
+            ),
         }
 
 
@@ -85,6 +105,7 @@ class VisionPipeline:
 
         self._detector: Detector | None = None
         self._tracker: ByteTracker = create_tracker(settings.tracker)
+        self._scene_motion = SceneMotionDetector(settings.scene_motion)
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._reload = asyncio.Event()
@@ -123,11 +144,14 @@ class VisionPipeline:
             self._reload.set()
         if "tracker" in changed:
             self._tracker = create_tracker(settings.tracker)
+        if "scene_motion" in changed:
+            self._scene_motion.update_settings(settings.scene_motion)
         if "cameras" in changed:
             # Never carry detections or track history across a primary-camera
             # switch or source restart.
             self._invalidate_result()
             self._last_frame_seq = -1
+            self._scene_motion.reset()
 
     def subscribe(self, listener: ResultListener) -> None:
         self._listeners.append(listener)
@@ -205,6 +229,7 @@ class VisionPipeline:
                 "algorithm": self._settings.tracker.algorithm,
                 "active_tracks": len(result.tracks) if result else 0,
             },
+            "scene_motion": self._scene_motion.status(),
             "target_fps": self._settings.detector.fps,
             "effective_fps": round(self._effective_fps, 2),
             "ticks": self._ticks,
@@ -334,6 +359,22 @@ class VisionPipeline:
         detections = detector.operational(raw_detections)
         inference_ms = detector.status.last_inference_ms
 
+        motion_evidence: MotionEvidence | None = None
+        if self._settings.scene_motion.enabled:
+            analysis = await asyncio.to_thread(self._scene_motion.update, frame.image, frame.ts)
+            unexplained = [
+                region
+                for region in analysis.regions
+                if not _motion_region_has_detection(
+                    region,
+                    proposals,
+                    self._settings.scene_motion.rescan_classes,
+                )
+            ]
+            due = self._scene_motion.claim_rescans(unexplained, frame.ts)
+            if due:
+                motion_evidence = await self._rescan_motion(detector, frame, due)
+
         if self._settings.tracker.enabled:
             tracks = self._tracker.update(detections, now=frame.wall_ts)
         else:
@@ -352,6 +393,7 @@ class VisionPipeline:
             inference_ms=inference_ms,
             total_ms=(time.perf_counter() - tick_started) * 1000.0,
             image=frame.image,
+            motion_evidence=motion_evidence,
         )
         self._latest = result
         self._ticks += 1
@@ -362,6 +404,95 @@ class VisionPipeline:
                 await listener(result)
             except Exception:
                 log.exception("vision listener failed")
+
+    async def _rescan_motion(
+        self,
+        detector: Detector,
+        frame: Any,
+        regions: list[MotionRegion],
+    ) -> MotionEvidence | None:
+        """Run evidence-only inference on native crops around motion regions."""
+        cfg = self._settings.scene_motion
+        native = frame.native
+        wanted = {name.casefold() for name in cfg.rescan_classes}
+        evidence_boxes: list[Detection] = []
+        best_confidence: float | None = None
+        elapsed_ms = 0.0
+
+        for region in regions:
+            x1, y1, x2, y2 = _native_crop_bounds(
+                region,
+                display_width=frame.width,
+                display_height=frame.height,
+                native_width=int(native.shape[1]),
+                native_height=int(native.shape[0]),
+                padding_ratio=cfg.crop_padding_ratio,
+                min_width_ratio=cfg.min_crop_width_ratio,
+            )
+            crop = native[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            started = time.perf_counter()
+            found = await asyncio.to_thread(
+                detector.infer,
+                crop,
+                min_confidence=cfg.rescan_confidence,
+            )
+            elapsed_ms += (time.perf_counter() - started) * 1000.0
+            if wanted:
+                found = [item for item in found if item.class_name.casefold() in wanted]
+
+            if found:
+                self._scene_motion.note_detection(len(found))
+                for item in found:
+                    mapped = Detection(
+                        x1=item.x1 + x1,
+                        y1=item.y1 + y1,
+                        x2=item.x2 + x1,
+                        y2=item.y2 + y1,
+                        confidence=item.confidence,
+                        class_id=item.class_id,
+                        class_name=item.class_name,
+                        source="motion_rescan",
+                    )
+                    evidence_boxes.append(mapped)
+                    best_confidence = max(best_confidence or 0.0, item.confidence)
+            elif cfg.save_motion_evidence:
+                mx1, my1, mx2, my2 = _map_region_to_native(
+                    region,
+                    display_width=frame.width,
+                    display_height=frame.height,
+                    native_width=int(native.shape[1]),
+                    native_height=int(native.shape[0]),
+                )
+                evidence_boxes.append(
+                    Detection(
+                        x1=mx1,
+                        y1=my1,
+                        x2=mx2,
+                        y2=my2,
+                        confidence=region.score,
+                        class_id=-1,
+                        class_name="motion",
+                        source="motion",
+                    )
+                )
+
+        if not evidence_boxes:
+            return None
+        class_name = "bird" if best_confidence is not None else "motion"
+        return MotionEvidence(
+            image=native,
+            detections=evidence_boxes,
+            regions=regions,
+            class_name=class_name,
+            confidence=best_confidence,
+            rescan_ms=elapsed_ms,
+        )
+
+    def motion_mask(self) -> np.ndarray | None:
+        """Latest monochrome foreground mask for the optional web preview."""
+        return self._scene_motion.mask_image()
 
 
 def _tracks_from_detections(detections: list[Detection], now: float) -> list[Track]:
@@ -390,3 +521,77 @@ def _tracks_from_detections(detections: list[Detection], now: float) -> list[Tra
         )
         for index, d in enumerate(detections)
     ]
+
+
+def _motion_region_has_detection(
+    region: MotionRegion,
+    detections: list[Detection],
+    class_names: list[str],
+) -> bool:
+    wanted = {name.casefold() for name in class_names}
+    region_area = max(1.0, region.width * region.height)
+    for detection in detections:
+        if wanted and detection.class_name.casefold() not in wanted:
+            continue
+        x1 = max(region.x1, detection.x1)
+        y1 = max(region.y1, detection.y1)
+        x2 = min(region.x2, detection.x2)
+        y2 = min(region.y2, detection.y2)
+        overlap = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        if overlap / region_area >= 0.15:
+            return True
+        cx, cy = region.center
+        if detection.x1 <= cx <= detection.x2 and detection.y1 <= cy <= detection.y2:
+            return True
+    return False
+
+
+def _map_region_to_native(
+    region: MotionRegion,
+    *,
+    display_width: int,
+    display_height: int,
+    native_width: int,
+    native_height: int,
+) -> tuple[float, float, float, float]:
+    sx = native_width / float(max(1, display_width))
+    sy = native_height / float(max(1, display_height))
+    return (region.x1 * sx, region.y1 * sy, region.x2 * sx, region.y2 * sy)
+
+
+def _native_crop_bounds(
+    region: MotionRegion,
+    *,
+    display_width: int,
+    display_height: int,
+    native_width: int,
+    native_height: int,
+    padding_ratio: float,
+    min_width_ratio: float,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = _map_region_to_native(
+        region,
+        display_width=display_width,
+        display_height=display_height,
+        native_width=native_width,
+        native_height=native_height,
+    )
+    width = max(1.0, x2 - x1)
+    height = max(1.0, y2 - y1)
+    center_x = (x1 + x2) / 2.0
+    center_y = (y1 + y2) / 2.0
+    wanted_width = max(width * (1.0 + 2.0 * padding_ratio), native_width * min_width_ratio)
+    wanted_height = max(
+        height * (1.0 + 2.0 * padding_ratio),
+        wanted_width * native_height / float(max(1, native_width)),
+    )
+    wanted_width = min(float(native_width), wanted_width)
+    wanted_height = min(float(native_height), wanted_height)
+    left = min(max(0.0, center_x - wanted_width / 2.0), native_width - wanted_width)
+    top = min(max(0.0, center_y - wanted_height / 2.0), native_height - wanted_height)
+    return (
+        int(left),
+        int(top),
+        max(int(left) + 1, min(native_width, round(left + wanted_width))),
+        max(int(top) + 1, min(native_height, round(top + wanted_height))),
+    )

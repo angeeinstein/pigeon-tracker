@@ -38,6 +38,7 @@ const TABS: { id: SectionName; label: string }[] = [
   { id: 'cameras', label: 'Camera' },
   { id: 'detector', label: 'AI' },
   { id: 'tracker', label: 'Tracking' },
+  { id: 'scene_motion', label: 'Scene motion' },
   { id: 'motion', label: 'Motion' },
   { id: 'controller', label: 'Controller' },
   { id: 'spray', label: 'Spray' },
@@ -50,6 +51,8 @@ const SECTION_DESCRIPTIONS: Record<SectionName, string> = {
   cameras: 'Choose video sources and decide which camera drives detection and calibration.',
   detector: 'Configure the model, input size, classes and confidence filters.',
   tracker: 'Control how detections become stable identities across frames.',
+  scene_motion:
+    'Find changed image regions and give unexplained motion a native-resolution AI rescan.',
   motion: 'Set server-side movement limits, speed, acceleration and parking behaviour.',
   controller: 'Choose simulated or physical hardware and configure its mechanics and link.',
   spray: 'Set water-output safety limits and timing budgets.',
@@ -76,6 +79,20 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
     'Tracking enabled': 'enabled', 'Track threshold': 'track_thresh', 'Low threshold': 'low_thresh',
     'Match threshold (IoU distance)': 'match_thresh', 'Track buffer': 'track_buffer',
     'Minimum hits to confirm': 'min_hits',
+  },
+  scene_motion: {
+    'Scene motion enabled': 'enabled', 'Processing width': 'processing_width',
+    'Background history': 'history_frames', Sensitivity: 'variance_threshold',
+    'Detect shadows': 'detect_shadows', Warmup: 'warmup_s',
+    'Minimum motion area': 'min_area_ratio', 'Maximum motion area': 'max_area_ratio',
+    'Maximum whole-frame change': 'max_frame_change_ratio',
+    'Minimum changed-pixel density': 'min_fill_ratio',
+    'Minimum region speed': 'min_speed_ratio_s', 'Maximum region speed': 'max_speed_ratio_s',
+    'Minimum persistence': 'min_persistence_frames', 'Crop padding': 'crop_padding_ratio',
+    'Minimum crop width': 'min_crop_width_ratio', 'Rescan confidence': 'rescan_confidence',
+    'Rescan classes': 'rescan_classes', 'Rescan interval': 'rescan_interval_s',
+    'Maximum rescans per event': 'max_rescans_per_event', 'Event re-arm': 'event_rearm_s',
+    'Maximum simultaneous regions': 'max_regions', 'Save motion-only evidence': 'save_motion_evidence',
   },
   motion: {
     'Pan minimum': 'pan_min_deg', 'Pan maximum': 'pan_max_deg', 'Tilt minimum': 'tilt_min_deg',
@@ -419,6 +436,92 @@ function DetectorModelStatus({
           {catalog.reload_error}. The previous working model remains active.
         </p>
       )}
+    </div>
+  );
+}
+
+function SceneMotionPreview({
+  enabled,
+  minAreaRatio,
+  maxAreaRatio,
+}: {
+  enabled: boolean;
+  minAreaRatio: number;
+  maxAreaRatio: number;
+}) {
+  const [revision, setRevision] = useState(0);
+  const [available, setAvailable] = useState(true);
+  const minSide = Math.sqrt(Math.max(0, Math.min(1, minAreaRatio))) * 100;
+  const maxSide = Math.sqrt(Math.max(0, Math.min(1, maxAreaRatio))) * 100;
+
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => {
+      setAvailable(true);
+      setRevision((value) => value + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+
+  return (
+    <div className="mb-3 rounded-lg border border-edge bg-panelalt/40 p-3 md:col-span-2">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-ink">Live foreground mask</p>
+          <p className="text-xs text-muted">
+            White pixels changed against the learned background. This never replaces the camera feed.
+          </p>
+        </div>
+        <Pill tone={enabled ? 'good' : 'idle'}>{enabled ? 'continuous' : 'disabled'}</Pill>
+      </div>
+      {enabled && available ? (
+        <div className="relative mx-auto w-fit max-w-full overflow-hidden rounded border border-edge bg-black">
+          <img
+            className="block max-h-72 max-w-full object-contain"
+            src={`${api.sceneMotionMask()}?v=${revision}`}
+            alt="Live monochrome scene-motion mask"
+            onLoad={() => setAvailable(true)}
+            onError={() => setAvailable(false)}
+          />
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 border-2 border-accent shadow-[0_0_0_1px_rgba(0,0,0,0.8)]"
+            style={{
+              width: `${maxSide}%`,
+              height: `${maxSide}%`,
+              transform: 'translate(-50%, -50%)',
+            }}
+            title="Maximum accepted motion area"
+          />
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 border-2 border-warn shadow-[0_0_0_1px_rgba(0,0,0,0.8)]"
+            style={{
+              width: `${minSide}%`,
+              height: `${minSide}%`,
+              minWidth: '4px',
+              minHeight: '4px',
+              transform: 'translate(-50%, -50%)',
+            }}
+            title="Minimum accepted motion area"
+          />
+        </div>
+      ) : (
+        <p className="rounded border border-edge bg-black/30 px-3 py-8 text-center text-xs text-muted">
+          {enabled ? 'Waiting for the first motion mask.' : 'Enable scene motion to start the mask.'}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted">
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 border-2 border-warn" />
+          Minimum equivalent square: {(minAreaRatio * 100).toFixed(3)}%
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-3 w-3 border-2 border-accent" />
+          Maximum equivalent square: {(maxAreaRatio * 100).toFixed(1)}%
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-muted">
+        Real motion regions may have any shape; the guides show the same fraction of the complete image.
+      </p>
     </div>
   );
 }
@@ -844,6 +947,185 @@ function Fields({
             label="Minimum hits to confirm"
             value={value.min_hits}
             onChange={(v) => update({ min_hits: v })}
+          />
+        </>
+      );
+    }
+    case 'scene_motion': {
+      const value = draft as SettingsType['scene_motion'];
+      return (
+        <>
+          <SceneMotionPreview
+            enabled={value.enabled}
+            minAreaRatio={value.min_area_ratio}
+            maxAreaRatio={value.max_area_ratio}
+          />
+          <Toggle
+            label="Scene motion enabled"
+            checked={value.enabled}
+            onChange={(v) => update({ enabled: v })}
+            hint="Runs continuously beside normal full-frame AI inference. Motion itself never targets or sprays."
+          />
+          <Toggle
+            label="Save motion-only evidence"
+            checked={value.save_motion_evidence}
+            onChange={(v) => update({ save_motion_evidence: v })}
+            hint="Store rescanned motion even when the second pass still finds no bird."
+          />
+          <NumberField
+            label="Processing width"
+            suffix="px"
+            value={value.processing_width}
+            step={32}
+            min={160}
+            max={1280}
+            onChange={(v) => update({ processing_width: v })}
+            hint="The inexpensive mask uses this width; crop rescans use the native camera frame."
+          />
+          <NumberField
+            label="Sensitivity"
+            value={value.variance_threshold}
+            step={1}
+            min={4}
+            max={100}
+            onChange={(v) => update({ variance_threshold: v })}
+            hint="Lower values mark smaller pixel differences as foreground."
+          />
+          <NumberField
+            label="Background history"
+            suffix="frames"
+            value={value.history_frames}
+            step={30}
+            onChange={(v) => update({ history_frames: v })}
+          />
+          <NumberField
+            label="Warmup"
+            suffix="s"
+            value={value.warmup_s}
+            step={1}
+            onChange={(v) => update({ warmup_s: v })}
+            hint="No rescans while the background model learns the scene after startup or a settings change."
+          />
+          <Toggle
+            label="Detect shadows"
+            checked={value.detect_shadows}
+            onChange={(v) => update({ detect_shadows: v })}
+            hint="Likely shadows are excluded from definite foreground pixels."
+          />
+          <NumberField
+            label="Minimum persistence"
+            suffix="frames"
+            value={value.min_persistence_frames}
+            min={1}
+            onChange={(v) => update({ min_persistence_frames: v })}
+            hint="One preserves fast arrivals; two or more rejects isolated compression noise."
+          />
+          <NumberField
+            label="Minimum motion area"
+            suffix="% of frame"
+            value={value.min_area_ratio * 100}
+            step={0.01}
+            min={0.001}
+            onChange={(v) => update({ min_area_ratio: v / 100 })}
+          />
+          <NumberField
+            label="Maximum motion area"
+            suffix="% of frame"
+            value={value.max_area_ratio * 100}
+            step={1}
+            onChange={(v) => update({ max_area_ratio: v / 100 })}
+          />
+          <NumberField
+            label="Maximum whole-frame change"
+            suffix="% of frame"
+            value={value.max_frame_change_ratio * 100}
+            step={1}
+            onChange={(v) => update({ max_frame_change_ratio: v / 100 })}
+            hint="Larger simultaneous changes are treated as exposure, reconnect, or lighting changes."
+          />
+          <NumberField
+            label="Minimum changed-pixel density"
+            suffix="% inside box"
+            value={value.min_fill_ratio * 100}
+            step={1}
+            onChange={(v) => update({ min_fill_ratio: v / 100 })}
+          />
+          <NumberField
+            label="Minimum region speed"
+            suffix="frame widths/s"
+            value={value.min_speed_ratio_s}
+            step={0.01}
+            onChange={(v) => update({ min_speed_ratio_s: v })}
+            hint="0 disables the minimum so slowly walking birds are retained."
+          />
+          <NumberField
+            label="Maximum region speed"
+            suffix="frame widths/s"
+            value={value.max_speed_ratio_s}
+            step={0.1}
+            onChange={(v) => update({ max_speed_ratio_s: v })}
+            hint="0 disables the maximum."
+          />
+          <NumberField
+            label="Crop padding"
+            suffix="x region/side"
+            value={value.crop_padding_ratio}
+            step={0.25}
+            onChange={(v) => update({ crop_padding_ratio: v })}
+            hint="1 adds one motion-region width and height on every side."
+          />
+          <NumberField
+            label="Minimum crop width"
+            suffix="% of native frame"
+            value={value.min_crop_width_ratio * 100}
+            step={1}
+            onChange={(v) => update({ min_crop_width_ratio: v / 100 })}
+          />
+          <NumberField
+            label="Rescan confidence"
+            value={value.rescan_confidence}
+            step={0.01}
+            min={0.01}
+            max={0.99}
+            onChange={(v) => update({ rescan_confidence: v })}
+            hint="The padded crop gets a lower evidence-only threshold than normal tracking."
+          />
+          <ModelClassField
+            label="Rescan classes"
+            value={value.rescan_classes}
+            onChange={(v) => update({ rescan_classes: v })}
+            availableClasses={detectorCatalog?.available_classes ?? []}
+            validationAvailable={Boolean(detectorCatalog?.validation_available)}
+            allLabel="All configured detector classes"
+            hint="Normally bird. Results remain evidence-only and cannot enter targeting."
+          />
+          <NumberField
+            label="Rescan interval"
+            suffix="s"
+            value={value.rescan_interval_s}
+            step={0.1}
+            onChange={(v) => update({ rescan_interval_s: v })}
+          />
+          <NumberField
+            label="Maximum rescans per event"
+            value={value.max_rescans_per_event}
+            min={1}
+            onChange={(v) => update({ max_rescans_per_event: v })}
+            hint="Bounds CPU and evidence from continuously moving leaves or banners."
+          />
+          <NumberField
+            label="Event re-arm"
+            suffix="s quiet"
+            value={value.event_rearm_s}
+            step={0.5}
+            onChange={(v) => update({ event_rearm_s: v })}
+          />
+          <NumberField
+            label="Maximum simultaneous regions"
+            value={value.max_regions}
+            min={1}
+            max={16}
+            onChange={(v) => update({ max_regions: v })}
           />
         </>
       );

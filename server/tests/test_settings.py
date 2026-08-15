@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.services.settings import SettingsError, SettingsStore, deep_merge
-from app.services.settings_schema import AppSettings, MotionSettings
+from app.services.settings_schema import AppSettings, MotionSettings, SceneMotionSettings
 
 
 class TestDeepMerge:
@@ -31,10 +31,16 @@ class TestDefaults:
         assert settings.detector.device == "cpu"
         assert settings.detector.input_size == 960
         assert settings.detector.capture_confidence < settings.detector.confidence
+        assert settings.scene_motion.enabled is True
+        assert settings.scene_motion.rescan_confidence < settings.detector.capture_confidence
 
     def test_motion_limits_are_validated(self) -> None:
         with pytest.raises(ValueError, match="pan_min_deg"):
             MotionSettings(pan_min_deg=50, pan_max_deg=10)
+
+    def test_scene_motion_area_limits_are_validated(self) -> None:
+        with pytest.raises(ValueError, match="min_area_ratio"):
+            SceneMotionSettings(min_area_ratio=0.2, max_area_ratio=0.1)
 
     def test_clamp(self) -> None:
         motion = MotionSettings(pan_min_deg=-30, pan_max_deg=30, tilt_min_deg=-10, tilt_max_deg=10)
@@ -64,6 +70,18 @@ class TestStore:
         reloaded = SettingsStore()
         settings = await reloaded.load()
         assert settings.motion.max_speed_deg_s == 42.0
+
+    async def test_scene_motion_settings_persist(self, temp_database: Path) -> None:
+        store = SettingsStore()
+        await store.load()
+        await store.update_section(
+            "scene_motion", {"processing_width": 640, "max_rescans_per_event": 5}
+        )
+
+        reloaded = SettingsStore()
+        settings = await reloaded.load()
+        assert settings.scene_motion.processing_width == 640
+        assert settings.scene_motion.max_rescans_per_event == 5
 
     async def test_partial_update_keeps_other_fields(self, temp_database: Path) -> None:
         store = SettingsStore()

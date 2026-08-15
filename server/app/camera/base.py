@@ -33,6 +33,9 @@ class Frame:
     #: ``time.time()`` when the frame was decoded — use for display/filenames.
     wall_ts: float
     camera_id: str
+    #: Native decoded image retained for short-lived high-resolution crops.
+    #: It may be the same array as ``image`` when no camera downscale is set.
+    native_image: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def width(self) -> int:
@@ -45,6 +48,10 @@ class Frame:
     @property
     def age_s(self) -> float:
         return time.monotonic() - self.ts
+
+    @property
+    def native(self) -> np.ndarray:
+        return self.native_image if self.native_image is not None else self.image
 
 
 @dataclass

@@ -290,6 +290,7 @@ export const api = {
   deleteDetectionCapture: (id: number) =>
     request<void>(`/api/detection-captures/${id}`, { method: 'DELETE' }),
   detectionCaptureImage: (id: number) => `/api/detection-captures/${id}/image`,
+  sceneMotionMask: () => '/api/scene-motion/mask',
 
   cameras: () =>
     request<{ primary_id: string; connected: boolean; cameras: CameraStatus[] }>('/api/cameras'),

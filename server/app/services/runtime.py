@@ -108,7 +108,7 @@ class Runtime:
         self.turret.subscribe_events(self._on_controller_event)
 
         await self.cameras.apply(settings.cameras)
-        await self.vision.apply_settings(settings, {"detector", "tracker"})
+        await self.vision.apply_settings(settings, {"detector", "tracker", "scene_motion"})
         await self.vision.start()
 
         self._tasks = [
@@ -150,7 +150,7 @@ class Runtime:
         if "cameras" in changed:
             self.camera_credentials.retain({camera.id for camera in settings.cameras.sources})
             await self.cameras.apply(settings.cameras)
-        if changed & {"detector", "tracker", "cameras"}:
+        if changed & {"detector", "tracker", "scene_motion", "cameras"}:
             await self.vision.apply_settings(settings, changed)
         if "targeting" in changed:
             self.selector.update_settings(settings.targeting)
@@ -175,6 +175,7 @@ class Runtime:
         that class can produce another event after being absent for a while.
         """
         detector = self.settings.detector
+        await self._save_motion_evidence(result)
         observations = result.proposals if detector.capture_enabled else result.detections
         by_class: dict[str, list[float]] = {}
         labels: dict[str, str] = {}
@@ -229,6 +230,49 @@ class Runtime:
                 f"{label} detected",
                 data=data,
             )
+
+    async def _save_motion_evidence(self, result: VisionResult) -> None:
+        evidence = result.motion_evidence
+        if evidence is None:
+            return
+        detector = self.settings.detector
+        motion = self.settings.scene_motion
+        settings_snapshot: dict[str, object] = detector.model_dump(mode="json")
+        settings_snapshot["scene_motion"] = motion.model_dump(mode="json")
+        settings_snapshot["motion_regions"] = [region.as_dict() for region in evidence.regions]
+        try:
+            capture = await self.detection_captures.create(
+                image=evidence.image,
+                camera_id=result.camera_id,
+                frame_seq=result.frame_seq,
+                detections=evidence.detections,
+                class_name=evidence.class_name,
+                confidence=evidence.confidence,
+                model_name=detector.model_path,
+                detector_settings=settings_snapshot,
+                jpeg_quality=detector.capture_jpeg_quality,
+                trigger="motion-rescan",
+            )
+        except Exception:
+            log.exception("failed to save motion-rescan evidence")
+            return
+
+        await self.events.emit(
+            ev.CAT_DETECTION,
+            (
+                "bird found by motion rescan"
+                if evidence.class_name == "bird"
+                else "motion rescan saved"
+            ),
+            data={
+                "camera_id": result.camera_id,
+                "frame_seq": result.frame_seq,
+                "regions": len(evidence.regions),
+                "boxes": len(evidence.detections),
+                "rescan_ms": round(evidence.rescan_ms, 1),
+                "capture_id": capture["id"],
+            },
+        )
 
     @property
     def settings(self) -> AppSettings:
@@ -542,6 +586,13 @@ class Runtime:
                 hud_lines=self._hud_lines(),
             )
         return encode_jpeg(image, ui.preview_quality, ui.preview_width)
+
+    def render_motion_mask(self) -> bytes:
+        """Encode the latest scene foreground mask without changing camera preview."""
+        mask = self.vision.motion_mask()
+        if mask is None:
+            raise LookupError("no scene-motion mask available yet")
+        return encode_jpeg(mask, quality=85)
 
     def _hud_lines(self) -> list[str]:
         turret = self.turret.state

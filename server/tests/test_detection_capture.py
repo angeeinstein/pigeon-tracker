@@ -78,6 +78,38 @@ async def test_all_rejected_boxes_make_a_negative_capture(
     assert completed["review_label"] == "not-bird"
 
 
+async def test_motion_rescan_source_is_preserved_for_review(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    motion = proposal("bird", 0.2, 0)
+    motion = Detection(
+        x1=motion.x1,
+        y1=motion.y1,
+        x2=motion.x2,
+        y2=motion.y2,
+        confidence=motion.confidence,
+        class_id=motion.class_id,
+        class_name=motion.class_name,
+        source="motion_rescan",
+    )
+    capture = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=3,
+        detections=[motion],
+        class_name="bird",
+        confidence=0.2,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+        trigger="motion-rescan",
+    )
+
+    assert capture["trigger"] == "motion-rescan"
+    assert capture["detections"][0]["source"] == "motion_rescan"  # type: ignore[index]
+
+
 def test_dataset_split_keeps_adjacent_camera_frames_together() -> None:
     rows = [
         {"id": 1, "camera_id": "overview", "ts": "2026-08-14T10:00:00+00:00"},

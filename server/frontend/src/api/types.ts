@@ -98,7 +98,7 @@ export interface DetectionAnnotation {
   confidence: number | null;
   class_id: number | null;
   class_name: string;
-  source: 'proposal' | 'manual';
+  source: 'proposal' | 'manual' | 'motion' | 'motion_rescan';
   review_status: DetectionAnnotationStatus;
   review_label: string;
 }
@@ -107,7 +107,7 @@ export interface DetectionCapture {
   id: number;
   ts: string;
   camera_id: string;
-  trigger: 'detection' | 'manual';
+  trigger: 'detection' | 'manual' | 'motion-rescan';
   class_name: string;
   confidence: number | null;
   frame_seq: number;
@@ -321,6 +321,30 @@ export interface Settings {
     match_thresh: number;
     track_buffer: number;
     min_hits: number;
+  };
+  scene_motion: {
+    enabled: boolean;
+    processing_width: number;
+    history_frames: number;
+    variance_threshold: number;
+    detect_shadows: boolean;
+    warmup_s: number;
+    min_area_ratio: number;
+    max_area_ratio: number;
+    max_frame_change_ratio: number;
+    min_fill_ratio: number;
+    min_speed_ratio_s: number;
+    max_speed_ratio_s: number;
+    min_persistence_frames: number;
+    crop_padding_ratio: number;
+    min_crop_width_ratio: number;
+    rescan_confidence: number;
+    rescan_classes: string[];
+    rescan_interval_s: number;
+    max_rescans_per_event: number;
+    event_rearm_s: number;
+    max_regions: number;
+    save_motion_evidence: boolean;
   };
   motion: {
     pan_min_deg: number;

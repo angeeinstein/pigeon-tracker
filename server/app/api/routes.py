@@ -69,6 +69,16 @@ async def detector_catalog(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any
     return runtime.detector_catalog()
 
 
+@router.get("/scene-motion/mask")
+async def scene_motion_mask(runtime: RuntimeDep, _auth: AuthDep) -> Response:
+    """Latest monochrome foreground mask used by motion-guided rescans."""
+    try:
+        data = runtime.render_motion_mask()
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 # ==========================================================================
 # auth
 # ==========================================================================

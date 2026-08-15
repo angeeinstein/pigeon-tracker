@@ -147,13 +147,15 @@ class YoloDetector(Detector):
             log.error("detector load failed", extra={"ctx": {"error": str(exc)}})
             raise
 
-    def infer(self, image: np.ndarray) -> list[Detection]:
+    def infer(self, image: np.ndarray, *, min_confidence: float | None = None) -> list[Detection]:
         if self._model is None:
             return []
         started = time.perf_counter()
-        threshold = min(self.settings.capture_confidence, self.settings.confidence)
-        if not self.settings.capture_enabled:
-            threshold = self.settings.confidence
+        threshold = min_confidence
+        if threshold is None:
+            threshold = min(self.settings.capture_confidence, self.settings.confidence)
+            if not self.settings.capture_enabled:
+                threshold = self.settings.confidence
         results = self._model.predict(
             source=image,
             imgsz=self.settings.input_size,

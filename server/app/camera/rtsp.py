@@ -96,13 +96,13 @@ def build_gstreamer_pipeline(config: CameraConfig, url: str) -> str:
     work), and hardware decoders are picked up automatically when present.
     """
     protocols = "tcp" if config.transport == "tcp" else "udp"
-    scale = ""
-    if config.target_width:
-        scale = f"videoscale ! video/x-raw,width={config.target_width} ! "
+    # Keep the decoded native image available to Python. CameraSource publishes
+    # a downscaled copy for normal preview/inference while retaining one native
+    # frame for motion-guided high-resolution crops.
     return (
         f'rtspsrc location="{url}" protocols={protocols} latency={config.latency_ms} '
         f"drop-on-latency=true do-retransmission=false ! "
-        f"decodebin ! videoconvert ! {scale}"
+        f"decodebin ! videoconvert ! "
         f"video/x-raw,format=BGR ! "
         f"appsink drop=true max-buffers=1 sync=false"
     )
@@ -242,7 +242,8 @@ class RtspCameraSource(CameraSource):
                 continue
 
             last_frame_at = now
-            image = self._maybe_downscale(image)
+            native_image = image
+            image = self._maybe_downscale(native_image)
             self._seq += 1
             self.buffer.publish(
                 Frame(
@@ -251,6 +252,7 @@ class RtspCameraSource(CameraSource):
                     ts=now,
                     wall_ts=time.time(),
                     camera_id=self.camera_id,
+                    native_image=native_image,
                 )
             )
             self.status.frames = self._seq
@@ -271,8 +273,7 @@ class RtspCameraSource(CameraSource):
 
     def _maybe_downscale(self, image: np.ndarray) -> np.ndarray:
         target = self.config.target_width
-        # GStreamer already scaled; only FFmpeg output needs resizing here.
-        if not target or self.status.backend != "ffmpeg":
+        if not target:
             return image
         height, width = image.shape[:2]
         if width <= target:

@@ -62,11 +62,23 @@ class TestHealth:
         payload = client.get("/api/system").json()
         assert "paths" in payload and "gpu" in payload
 
+    def test_scene_motion_mask_is_available_without_replacing_preview(
+        self, client: TestClient
+    ) -> None:
+        deadline = time.monotonic() + 2.0
+        response = client.get("/api/scene-motion/mask")
+        while response.status_code == 404 and time.monotonic() < deadline:
+            time.sleep(0.02)
+            response = client.get("/api/scene-motion/mask")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert response.content.startswith(b"\xff\xd8")
+
 
 class TestSettings:
     def test_read_all(self, client: TestClient) -> None:
         payload = client.get("/api/settings").json()
-        assert "targeting" in payload and "motion" in payload
+        assert "targeting" in payload and "motion" in payload and "scene_motion" in payload
 
     def test_patch_and_read_back(self, client: TestClient) -> None:
         response = client.patch("/api/settings/ui", json={"preview_fps": 4})

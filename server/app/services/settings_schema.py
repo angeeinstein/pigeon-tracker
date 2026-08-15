@@ -125,6 +125,64 @@ class TrackerSettings(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Scene motion (camera foreground detection)
+# --------------------------------------------------------------------------
+
+
+class SceneMotionSettings(BaseModel):
+    """Foreground-mask proposals used for evidence-only crop rescans.
+
+    This is deliberately separate from :class:`MotionSettings`, which controls
+    the physical turret axes. Motion proposals never enter targeting directly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    #: Width used for the inexpensive background model. Aspect ratio is kept.
+    processing_width: int = Field(default=480, ge=160, le=1280)
+    #: Frames retained by OpenCV's adaptive MOG2 background model.
+    history_frames: int = Field(default=300, ge=30, le=3600)
+    #: Lower values make the foreground mask more sensitive.
+    variance_threshold: float = Field(default=24.0, ge=4.0, le=100.0)
+    detect_shadows: bool = True
+    #: Ignore proposals while the adaptive background model is first learning.
+    warmup_s: float = Field(default=5.0, ge=0.0, le=120.0)
+    #: Connected foreground area as a fraction of the complete frame.
+    min_area_ratio: float = Field(default=0.0002, ge=0.00001, le=0.25)
+    max_area_ratio: float = Field(default=0.12, ge=0.001, le=0.9)
+    #: Reject camera/exposure changes affecting this much of the frame at once.
+    max_frame_change_ratio: float = Field(default=0.35, ge=0.01, le=0.95)
+    #: Reject sparse components such as isolated compression speckles.
+    min_fill_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    #: Optional centroid-speed limits in frame widths per second. Zero disables.
+    min_speed_ratio_s: float = Field(default=0.0, ge=0.0, le=10.0)
+    max_speed_ratio_s: float = Field(default=0.0, ge=0.0, le=10.0)
+    min_persistence_frames: int = Field(default=1, ge=1, le=30)
+    #: Motion regions are enlarged by this fraction on every side before rescan.
+    crop_padding_ratio: float = Field(default=1.0, ge=0.0, le=5.0)
+    #: Ensure enough visual context even when the changed region is tiny.
+    min_crop_width_ratio: float = Field(default=0.18, ge=0.02, le=1.0)
+    #: Crop rescans intentionally look below the normal evidence threshold.
+    rescan_confidence: float = Field(default=0.05, ge=0.01, le=0.99)
+    rescan_classes: list[str] = Field(default_factory=lambda: ["bird"])
+    rescan_interval_s: float = Field(default=0.75, ge=0.1, le=60.0)
+    max_rescans_per_event: int = Field(default=3, ge=1, le=30)
+    #: A region must be absent this long before it becomes a new event.
+    event_rearm_s: float = Field(default=2.0, ge=0.2, le=120.0)
+    max_regions: int = Field(default=3, ge=1, le=16)
+    save_motion_evidence: bool = True
+
+    @model_validator(mode="after")
+    def _check_ranges(self) -> SceneMotionSettings:
+        if self.min_area_ratio >= self.max_area_ratio:
+            raise ValueError("min_area_ratio must be less than max_area_ratio")
+        if self.max_speed_ratio_s and self.min_speed_ratio_s > self.max_speed_ratio_s:
+            raise ValueError("min_speed_ratio_s must not exceed max_speed_ratio_s")
+        return self
+
+
+# --------------------------------------------------------------------------
 # Motion
 # --------------------------------------------------------------------------
 
@@ -347,6 +405,7 @@ class AppSettings(BaseModel):
     cameras: CamerasSettings = Field(default_factory=CamerasSettings)
     detector: DetectorSettings = Field(default_factory=DetectorSettings)
     tracker: TrackerSettings = Field(default_factory=TrackerSettings)
+    scene_motion: SceneMotionSettings = Field(default_factory=SceneMotionSettings)
     motion: MotionSettings = Field(default_factory=MotionSettings)
     controller: ControllerSettings = Field(default_factory=ControllerSettings)
     spray: SpraySettings = Field(default_factory=SpraySettings)
