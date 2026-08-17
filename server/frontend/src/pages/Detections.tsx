@@ -463,6 +463,9 @@ function CaptureReviewer({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [drawMode, setDrawMode] = useState(false);
   const [draft, setDraft] = useState<{ start: Point; end: Point } | null>(null);
+  const [boxesHidden, setBoxesHidden] = useState(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const overlaysHidden = boxesHidden || spaceHeld;
   const selected = capture.detections[selectedIndex];
   const legacyImageLabel =
     capture.review_status === 'training' &&
@@ -475,6 +478,8 @@ function CaptureReviewer({
     setSelectedIndex(firstUnreviewed >= 0 ? firstUnreviewed : 0);
     setDrawMode(false);
     setDraft(null);
+    setBoxesHidden(false);
+    setSpaceHeld(false);
   }, [capture.id]);
 
   useEffect(() => {
@@ -521,6 +526,11 @@ function CaptureReviewer({
     function keyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, select')) return;
+      if (event.code === 'Space') {
+        setSpaceHeld(true);
+        event.preventDefault();
+        return;
+      }
       const key = event.key.toLowerCase();
       if (key === 'arrowleft' && canPrevious) onPrevious();
       else if (key === 'arrowright' && canNext) onNext();
@@ -528,6 +538,7 @@ function CaptureReviewer({
       else if (key === 'x') void reviewSelected('rejected');
       else if (key === 'u') void reviewSelected('unreviewed');
       else if (key === 'b') setDrawMode((active) => !active);
+      else if (key === 'h') setBoxesHidden((hidden) => !hidden);
       else if (key === 'n') void rejectImage();
       else if (key === '[') cycleBox(-1);
       else if (key === ']') cycleBox(1);
@@ -537,8 +548,22 @@ function CaptureReviewer({
       } else return;
       event.preventDefault();
     }
+    function keyUp(event: KeyboardEvent) {
+      if (event.code !== 'Space') return;
+      setSpaceHeld(false);
+      event.preventDefault();
+    }
+    function windowBlur() {
+      setSpaceHeld(false);
+    }
     window.addEventListener('keydown', keyDown);
-    return () => window.removeEventListener('keydown', keyDown);
+    window.addEventListener('keyup', keyUp);
+    window.addEventListener('blur', windowBlur);
+    return () => {
+      window.removeEventListener('keydown', keyDown);
+      window.removeEventListener('keyup', keyUp);
+      window.removeEventListener('blur', windowBlur);
+    };
   });
 
   function imagePoint(event: ReactPointerEvent<SVGSVGElement>): Point {
@@ -573,7 +598,7 @@ function CaptureReviewer({
     setDraft(null);
     setDrawMode(false);
     const updated = await onAdd(bbox);
-    if (updated) setSelectedIndex(updated.detections.length - 1);
+    if (updated && !selected) setSelectedIndex(updated.detections.length - 1);
   }
 
   const draftBox = useMemo(() => {
@@ -629,37 +654,40 @@ function CaptureReviewer({
               onPointerMove={pointerMove}
               onPointerUp={(event) => void pointerUp(event)}
             >
-              {capture.detections.map((annotation, index) => {
-                const [x1, y1, x2, y2] = annotation.bbox;
-                const active = index === selectedIndex;
-                return (
-                  <g key={`${annotation.source}-${index}`}>
-                    <rect
-                      x={x1}
-                      y={y1}
-                      width={Math.max(1, x2 - x1)}
-                      height={Math.max(1, y2 - y1)}
-                      fill={active ? `${BOX_COLOUR[annotation.review_status]}22` : 'transparent'}
-                      stroke={BOX_COLOUR[annotation.review_status]}
-                      strokeWidth={active ? 6 : 3}
-                      strokeDasharray={annotation.review_status === 'rejected' ? '14 9' : undefined}
-                      className={drawMode ? 'pointer-events-none' : 'cursor-pointer'}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={() => setSelectedIndex(index)}
-                    />
-                    <text
-                      x={x1 + 5}
-                      y={Math.max(18, y1 + 20)}
-                      fill={BOX_COLOUR[annotation.review_status]}
-                      fontSize={Math.max(16, capture.frame_width / 70)}
-                      fontWeight="bold"
-                      className="pointer-events-none"
-                    >
-                      {index + 1} {annotation.class_name}
-                    </text>
-                  </g>
-                );
-              })}
+              {!overlaysHidden &&
+                capture.detections.map((annotation, index) => {
+                  const [x1, y1, x2, y2] = annotation.bbox;
+                  const active = index === selectedIndex;
+                  return (
+                    <g key={`${annotation.source}-${index}`}>
+                      <rect
+                        x={x1}
+                        y={y1}
+                        width={Math.max(1, x2 - x1)}
+                        height={Math.max(1, y2 - y1)}
+                        fill={active ? `${BOX_COLOUR[annotation.review_status]}22` : 'transparent'}
+                        stroke={BOX_COLOUR[annotation.review_status]}
+                        strokeWidth={active ? 6 : 3}
+                        strokeDasharray={
+                          annotation.review_status === 'rejected' ? '14 9' : undefined
+                        }
+                        className={drawMode ? 'pointer-events-none' : 'cursor-pointer'}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => setSelectedIndex(index)}
+                      />
+                      <text
+                        x={x1 + 5}
+                        y={Math.max(18, y1 + 20)}
+                        fill={BOX_COLOUR[annotation.review_status]}
+                        fontSize={Math.max(16, capture.frame_width / 70)}
+                        fontWeight="bold"
+                        className="pointer-events-none"
+                      >
+                        {index + 1} {annotation.class_name}
+                      </text>
+                    </g>
+                  );
+                })}
               {draftBox && (
                 <rect
                   {...draftBox}
@@ -686,7 +714,6 @@ function CaptureReviewer({
               can be exported.
             </Banner>
           )}
-
           {selected ? (
             <div className="rounded-lg border border-edge bg-panelalt p-3 text-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -736,6 +763,15 @@ function CaptureReviewer({
             </button>
           </div>
 
+          <button
+            className={`btn w-full px-3 py-2 ${boxesHidden ? 'border-accent text-accent' : ''}`}
+            aria-pressed={boxesHidden}
+            onClick={() => setBoxesHidden((hidden) => !hidden)}
+          >
+            {boxesHidden ? 'Show boxes (H)' : 'Hide boxes (H)'}
+          </button>
+          <p className="text-xs text-muted">Hold Space to hide overlays temporarily.</p>
+
           {selected?.source === 'manual' && (
             <button
               className="btn w-full px-3 py-2 text-bad"
@@ -762,11 +798,16 @@ function CaptureReviewer({
           >
             No bird in image (N)
           </button>
+          <p className="text-xs leading-5 text-muted">
+            X rejects the selected box, moves through any remaining boxes, and advances after the
+            last rejection. N is an optional shortcut that rejects every box at once.
+          </p>
 
           <div className="rounded-lg border border-edge p-3 text-xs leading-5 text-muted">
             <strong className="text-ink">Keyboard</strong>
             <p>A/Enter correct bird / X wrong / U reset</p>
             <p>[ and ] select box / B draw box / N no bird</p>
+            <p>H toggle boxes / hold Space to peek</p>
             <p>Left/Right image / Esc close</p>
           </div>
         </aside>

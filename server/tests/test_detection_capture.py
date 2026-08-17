@@ -78,6 +78,32 @@ async def test_all_rejected_boxes_make_a_negative_capture(
     assert completed["review_label"] == "not-bird"
 
 
+async def test_rejecting_last_box_completes_negative_capture(
+    temp_database: Path, tmp_path: Path
+) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    capture = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=3,
+        detections=[proposal("bird", 0.06, 0)],
+        class_name="bird",
+        confidence=0.06,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+
+    completed = await store.review_annotation(
+        int(capture["id"]), 0, review_status="rejected"
+    )
+
+    assert completed is not None
+    assert completed["review_status"] == "rejected"
+    assert completed["review_label"] == "not-bird"
+    assert completed["detections"][0]["review_status"] == "rejected"  # type: ignore[index]
+
+
 async def test_motion_rescan_source_is_preserved_for_review(
     temp_database: Path, tmp_path: Path
 ) -> None:
