@@ -23,6 +23,14 @@ def test_duration_formatting(trainer_module: ModuleType) -> None:
     assert trainer_module._format_duration(3725) == "1h 02m"
 
 
+def test_windows_pin_memory_failures_are_retryable(trainer_module: ModuleType) -> None:
+    assert trainer_module._is_pin_memory_failure(
+        "Caught AcceleratorError in pin memory thread for device 0"
+    )
+    assert trainer_module._is_pin_memory_failure("CUDA error: resource already mapped")
+    assert not trainer_module._is_pin_memory_failure("CUDA out of memory")
+
+
 def test_nvidia_smi_output_is_parsed(
     trainer_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -177,12 +178,49 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
+def _exception_text(exc: BaseException) -> str:
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        messages.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return " | ".join(messages)
+
+
+def _is_pin_memory_failure(message: str) -> bool:
+    normalized = message.casefold()
+    return "pin memory" in normalized or "resource already mapped" in normalized
+
+
+def _configure_ultralytics_pin_memory(enabled: bool) -> None:
+    """Override Ultralytics' otherwise hard-coded DataLoader pinning choice."""
+    import ultralytics.data.build as data_build
+
+    original = data_build.build_dataloader
+
+    def configured_build_dataloader(*args: Any, **kwargs: Any) -> Any:
+        kwargs["pin_memory"] = enabled
+        return original(*args, **kwargs)
+
+    data_build.build_dataloader = configured_build_dataloader
+
+    # Detection modules may bind the builder at import time, so update both.
+    import ultralytics.models.yolo.detect.train as detect_train
+    import ultralytics.models.yolo.detect.val as detect_val
+
+    detect_train.build_dataloader = configured_build_dataloader
+    detect_val.build_dataloader = configured_build_dataloader
+
+
 def _worker_train(config_path: Path) -> int:
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     config = json.loads(config_path.read_text(encoding="utf-8"))
 
     import torch
     from ultralytics import YOLO
+
+    pin_memory = bool(config.get("pin_memory", False))
+    _configure_ultralytics_pin_memory(pin_memory)
 
     nvml: Any | None = None
     nvml_handle: Any | None = None
@@ -205,9 +243,12 @@ def _worker_train(config_path: Path) -> int:
         "training_start",
         device=str(device),
         gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        workers=int(config["workers"]),
+        pin_memory=pin_memory,
+        resumed=bool(config.get("resume")),
     )
 
-    model = YOLO(config["model"])
+    model = YOLO(config.get("resume") or config["model"])
     last_batch_report: dict[int, int] = {}
     batch_counts: dict[int, int] = {}
 
@@ -273,34 +314,56 @@ def _worker_train(config_path: Path) -> int:
 
     model.add_callback("on_train_batch_end", on_train_batch_end)
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-    results = model.train(
-        data=config["data"],
-        imgsz=int(config["imgsz"]),
-        epochs=int(config["epochs"]),
-        patience=int(config["patience"]),
-        batch=int(config["batch"]),
-        device=device,
-        workers=int(config["workers"]),
-        seed=int(config["seed"]),
-        deterministic=True,
-        project=config["project"],
-        name=config["name"],
-        plots=True,
-        verbose=True,
-    )
-    trainer = model.trainer
-    save_dir = Path(str(getattr(trainer, "save_dir", config["project"]))).resolve()
-    best = Path(str(getattr(trainer, "best", save_dir / "weights" / "best.pt"))).resolve()
-    _emit_worker(
-        "complete",
-        save_dir=str(save_dir),
-        best=str(best),
-        result=str(results),
-    )
-    if nvml is not None:
-        with suppress(Exception):
-            nvml.nvmlShutdown()
-    return 0
+    train_arguments = {
+        "data": config["data"],
+        "imgsz": int(config["imgsz"]),
+        "epochs": int(config["epochs"]),
+        "patience": int(config["patience"]),
+        "batch": int(config["batch"]),
+        "device": device,
+        "workers": int(config["workers"]),
+        "seed": int(config["seed"]),
+        "deterministic": True,
+        "project": config["project"],
+        "name": config["name"],
+        "plots": True,
+        "verbose": True,
+    }
+    if config.get("resume"):
+        train_arguments["resume"] = str(config["resume"])
+    try:
+        results = model.train(**train_arguments)
+        trainer = model.trainer
+        save_dir = Path(str(getattr(trainer, "save_dir", config["project"]))).resolve()
+        best = Path(
+            str(getattr(trainer, "best", save_dir / "weights" / "best.pt"))
+        ).resolve()
+        _emit_worker(
+            "complete",
+            save_dir=str(save_dir),
+            best=str(best),
+            result=str(results),
+        )
+        return 0
+    except Exception as exc:
+        trainer = getattr(model, "trainer", None)
+        save_dir = Path(str(getattr(trainer, "save_dir", config["project"]))).resolve()
+        last = Path(str(getattr(trainer, "last", save_dir / "weights" / "last.pt"))).resolve()
+        message = _exception_text(exc)
+        retryable = _is_pin_memory_failure(message)
+        _emit_worker(
+            "failure",
+            message=message,
+            retryable_safe_loader=retryable,
+            save_dir=str(save_dir),
+            last=str(last) if last.is_file() else None,
+        )
+        traceback.print_exc()
+        return 75 if retryable else 1
+    finally:
+        if nvml is not None:
+            with suppress(Exception):
+                nvml.nvmlShutdown()
 
 
 def _worker_main(argv: list[str]) -> int:
@@ -449,10 +512,11 @@ def _stream_process(
     assert process.stdout is not None
     for raw_line in process.stdout:
         line = ANSI_ESCAPE_RE.sub("", raw_line.rstrip("\r\n"))
-        if line.startswith(EVENT_PREFIX):
+        event_index = line.find(EVENT_PREFIX)
+        if event_index >= 0:
             if event:
                 try:
-                    event(json.loads(line[len(EVENT_PREFIX) :]))
+                    event(json.loads(line[event_index + len(EVENT_PREFIX) :]))
                 except json.JSONDecodeError:
                     log(line)
         elif line:
@@ -598,10 +662,11 @@ class TrainerGui:
             "epochs": tk.StringVar(value="100"),
             "patience": tk.StringVar(value="20"),
             "batch": tk.StringVar(value="-1"),
-            "workers": tk.StringVar(value="8"),
+            "workers": tk.StringVar(value="4"),
             "device": tk.StringVar(value="auto"),
             "name": tk.StringVar(value="pigeon-v1"),
             "update": tk.BooleanVar(value=False),
+            "pin_memory": tk.BooleanVar(value=False),
         }
         fields = (
             (
@@ -633,7 +698,8 @@ class TrainerGui:
             (
                 "Data workers",
                 "workers",
-                "8 suits this computer. Reduce to 2 if Windows data loading becomes unstable.",
+                "4 keeps image preparation parallel. The trainer retries with 0 if Windows "
+                "loading fails.",
             ),
             (
                 "Device (auto, 0, cpu)",
@@ -669,16 +735,21 @@ class TrainerGui:
             text="Update Ultralytics and training dependencies before starting",
             variable=self.values["update"],
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            settings,
+            text="Use pinned data-loader memory (advanced; leave off on Windows)",
+            variable=self.values["pin_memory"],
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Button(
             settings,
             text="Restore recommended settings",
             command=self.restore_recommended,
-        ).grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=6, column=0, sticky="w", pady=(8, 0))
         ttk.Button(
             settings,
             text="What do these settings mean?",
             command=self.show_settings_help,
-        ).grid(row=5, column=1, sticky="e", pady=(8, 0))
+        ).grid(row=6, column=1, sticky="e", pady=(8, 0))
 
         self.summary = ttk.Label(outer, text="Checking dataset...")
         self.summary.pack(anchor="w", pady=(10, 4))
@@ -718,12 +789,13 @@ class TrainerGui:
             "epochs": "100",
             "patience": "20",
             "batch": "-1",
-            "workers": "8",
+            "workers": "4",
             "device": "auto",
             "name": "pigeon-v1",
         }
         for key, value in recommended.items():
             self.values[key].set(value)
+        self.values["pin_memory"].set(False)
 
     def show_settings_help(self) -> None:
         from tkinter import messagebox
@@ -739,8 +811,10 @@ class TrainerGui:
             "to run all 100 epochs.\n\n"
             "Batch: -1 lets Ultralytics target about 60% of VRAM. A fixed smaller number is "
             "useful only when diagnosing memory problems.\n\n"
-            "Workers: 8 prepares images in parallel for the GPU. Reduce it if Windows reports "
-            "worker errors.\n\n"
+            "Workers: 4 prepares images in parallel. If Windows data loading fails, the trainer "
+            "automatically restarts with the safest 0-worker mode.\n\n"
+            "Pinned memory: leave this off on Windows. It can slightly accelerate transfers, "
+            "but the current PyTorch/Windows combination can fail in its pin-memory thread.\n\n"
             "Device: auto now verifies CUDA and repairs CPU-only PyTorch automatically. It will "
             "not silently use CPU when an NVIDIA GPU is detected.",
             parent=self.root,
@@ -809,6 +883,7 @@ class TrainerGui:
             name=self.values["name"].get().strip() or "pigeon-v1",
             seed=42,
             update=bool(self.values["update"].get()),
+            pin_memory=bool(self.values["pin_memory"].get()),
         )
         if not config["model"]:
             raise ValueError("Starting model cannot be empty")
@@ -839,20 +914,29 @@ class TrainerGui:
             output.mkdir(exist_ok=True)
             config.update(data=str(local_yaml), project=str(output))
             config_path = DATASET_DIR / ".training-config.json"
-            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-            self.events.put(("status", "Training..."))
-            code = _stream_process(
-                [
-                    str(python),
-                    str(Path(__file__).resolve()),
-                    "--worker",
-                    "--config",
-                    str(config_path),
-                ],
-                self.log,
-                self._worker_event,
-                self.register_process,
-            )
+            code = self._run_training_worker(python, config_path, config)
+            failure = getattr(self, "worker_failure", None)
+            if (
+                code != 0
+                and not self.cancel_requested
+                and failure
+                and failure.get("retryable_safe_loader")
+            ):
+                safe_config = dict(config)
+                safe_config.update(workers=0, pin_memory=False)
+                checkpoint = failure.get("last")
+                if checkpoint and Path(str(checkpoint)).is_file():
+                    safe_config["resume"] = str(checkpoint)
+                    recovery = f"resuming from {checkpoint}"
+                else:
+                    safe_config.pop("resume", None)
+                    recovery = "restarting the run (no completed epoch checkpoint existed yet)"
+                self.log(
+                    "\nWindows pinned-memory loading failed. Starting a new clean worker with "
+                    f"pinned memory off and workers=0, {recovery}."
+                )
+                self.events.put(("status", "Recovering with safe Windows data loading..."))
+                code = self._run_training_worker(python, config_path, safe_config)
             if self.cancel_requested:
                 self.events.put(("cancelled", None))
             elif code != 0:
@@ -860,7 +944,28 @@ class TrainerGui:
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
+    def _run_training_worker(
+        self, python: Path, config_path: Path, config: dict[str, Any]
+    ) -> int:
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        self.worker_failure: dict[str, Any] | None = None
+        self.events.put(("status", "Training..."))
+        return _stream_process(
+            [
+                str(python),
+                str(Path(__file__).resolve()),
+                "--worker",
+                "--config",
+                str(config_path),
+            ],
+            self.log,
+            self._worker_event,
+            self.register_process,
+        )
+
     def _worker_event(self, payload: dict[str, Any]) -> None:
+        if payload.get("event") == "failure":
+            self.worker_failure = payload
         self.events.put(("worker", payload))
 
     def _poll(self) -> None:
@@ -914,6 +1019,11 @@ class TrainerGui:
             gpu = payload.get("gpu") or "none"
             self.training_started_at = time.monotonic()
             self.status.configure(text=f"Training on device {payload.get('device')} ({gpu})")
+            self.log(
+                f"Data loader: {payload.get('workers')} workers; pinned memory "
+                f"{'on' if payload.get('pin_memory') else 'off'}"
+                + ("; resumed checkpoint" if payload.get("resumed") else "")
+            )
         elif event == "batch":
             epoch = int(payload.get("epoch", 1))
             epochs = max(1, int(payload.get("epochs", 1)))
@@ -948,6 +1058,11 @@ class TrainerGui:
                 elapsed = time.monotonic() - self.training_started_at
                 self.details.configure(text=f"Total training time: {_format_duration(elapsed)}")
             self.open_button.configure(state="normal")
+        elif event == "failure":
+            if payload.get("retryable_safe_loader"):
+                self.status.configure(text="Data loader failed; preparing automatic safe retry...")
+            else:
+                self.status.configure(text="Training worker failed")
 
     def _update_timing(self, fraction: float, payload: dict[str, Any]) -> None:
         if self.training_started_at is None:

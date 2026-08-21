@@ -158,7 +158,10 @@ systemctl restart turret-control
    use, settings guidance, cancellation and a direct link to the resulting
    `best.pt`. When NVIDIA hardware is present, the launcher installs and
    verifies CUDA-enabled PyTorch and refuses to silently fall back to a
-   CPU-only build. The GPU is used only while training is running.
+   CPU-only build. On Windows it leaves pinned loader memory disabled to avoid
+   PyTorch driver-mapping failures; if parallel loading still fails, it
+   automatically retries in safe loader mode and resumes a checkpoint when one
+   exists. The GPU is used only while training is running.
    Upload that checkpoint under **Settings → AI → Install a trained model**;
    give it a versioned name, select it, then save all settings to load it.
    Uploads are authenticated, limited to 512 MiB and installed atomically. An
