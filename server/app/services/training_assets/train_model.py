@@ -10,6 +10,7 @@ dependency installation and training output without freezing.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import queue
@@ -178,6 +179,99 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
+METRIC_KEYS = {
+    "precision": "metrics/precision(B)",
+    "recall": "metrics/recall(B)",
+    "map50": "metrics/mAP50(B)",
+    "map50_95": "metrics/mAP50-95(B)",
+}
+
+
+def _numeric_metrics(raw: dict[str, Any]) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for short_name, source_name in METRIC_KEYS.items():
+        value = _as_float(raw.get(source_name))
+        if value is not None:
+            metrics[short_name] = value
+    return metrics
+
+
+def _validation_fitness(metrics: dict[str, Any]) -> float | None:
+    map50 = _as_float(metrics.get("map50"))
+    map50_95 = _as_float(metrics.get("map50_95"))
+    if map50 is None or map50_95 is None:
+        return None
+    return 0.1 * map50 + 0.9 * map50_95
+
+
+def _model_recommendation(
+    trained: dict[str, Any],
+    baseline: dict[str, Any] | None,
+    best_path: Path,
+    starting_path: Path,
+) -> dict[str, str]:
+    trained_fitness = _validation_fitness(trained)
+    baseline_fitness = _validation_fitness(baseline or {})
+    if (
+        trained_fitness is not None
+        and baseline_fitness is not None
+        and baseline_fitness > trained_fitness
+    ):
+        return {
+            "label": f"Keep the starting model ({starting_path.name})",
+            "path": str(starting_path),
+            "reason": "It scored higher than the trained checkpoint on held-out validation.",
+        }
+    comparison = (
+        "It outperformed the starting model on held-out validation."
+        if baseline_fitness is not None
+        else "It had the strongest held-out validation score during this run."
+    )
+    return {
+        "label": "Use best.pt",
+        "path": str(best_path),
+        "reason": comparison,
+    }
+
+
+def _training_history_summary(save_dir: Path) -> dict[str, Any]:
+    csv_path = save_dir / "results.csv"
+    rows: list[dict[str, str]] = []
+    if csv_path.is_file():
+        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+    best_epoch: int | None = None
+    best_fitness: float | None = None
+    for row in rows:
+        metrics = _numeric_metrics(row)
+        if "map50" not in metrics or "map50_95" not in metrics:
+            continue
+        # This is the fitness weighting used by Ultralytics detection models.
+        fitness = _validation_fitness(metrics)
+        if fitness is None:
+            continue
+        if best_fitness is None or fitness > best_fitness:
+            best_fitness = fitness
+            with suppress(TypeError, ValueError):
+                best_epoch = int(float(row.get("epoch", "")))
+
+    chart_names = (
+        "results.png",
+        "BoxPR_curve.png",
+        "BoxF1_curve.png",
+        "BoxP_curve.png",
+        "BoxR_curve.png",
+        "confusion_matrix_normalized.png",
+        "confusion_matrix.png",
+    )
+    return {
+        "epochs_completed": len(rows),
+        "best_epoch": best_epoch,
+        "charts": [str(save_dir / name) for name in chart_names if (save_dir / name).is_file()],
+    }
+
+
 def _exception_text(exc: BaseException) -> str:
     messages: list[str] = []
     current: BaseException | None = exc
@@ -210,6 +304,63 @@ def _configure_ultralytics_pin_memory(enabled: bool) -> None:
 
     detect_train.build_dataloader = configured_build_dataloader
     detect_val.build_dataloader = configured_build_dataloader
+
+
+def _benchmark_starting_model(
+    model_path: str,
+    data_path: str,
+    image_size: int,
+    device: str | int,
+    save_dir: Path,
+) -> dict[str, Any]:
+    """Evaluate only the starting model's bird class against our class 0 labels."""
+    import torch
+    from ultralytics import YOLO
+    from ultralytics.models.yolo.detect import DetectionValidator
+
+    starting_model = YOLO(model_path)
+    names = dict(starting_model.names)
+    bird_class = next(
+        (int(index) for index, name in names.items() if str(name).strip().casefold() == "bird"),
+        None,
+    )
+    if bird_class is None:
+        raise ValueError("The starting model has no class named 'bird', so it cannot be compared.")
+
+    class BirdOnlyValidator(DetectionValidator):
+        def postprocess(self, predictions: Any) -> Any:
+            processed = super().postprocess(predictions)
+            for result in processed:
+                if not len(result["cls"]):
+                    continue
+                keep = result["cls"] == bird_class
+                for key in ("bboxes", "conf", "cls", "extra"):
+                    if key in result:
+                        result[key] = result[key][keep]
+                if len(result["cls"]):
+                    result["cls"] = torch.zeros_like(result["cls"])
+            return processed
+
+    results = starting_model.val(
+        validator=BirdOnlyValidator,
+        data=data_path,
+        imgsz=image_size,
+        device=device,
+        workers=0,
+        plots=False,
+        project=str(save_dir),
+        name="starting-model-benchmark",
+        exist_ok=True,
+        verbose=False,
+    )
+    return {
+        "model": Path(model_path).name,
+        "bird_class": bird_class,
+        "precision": float(results.box.mp),
+        "recall": float(results.box.mr),
+        "map50": float(results.box.map50),
+        "map50_95": float(results.box.map),
+    }
 
 
 def _worker_train(config_path: Path) -> int:
@@ -338,11 +489,46 @@ def _worker_train(config_path: Path) -> int:
         best = Path(
             str(getattr(trainer, "best", save_dir / "weights" / "best.pt"))
         ).resolve()
+        last = Path(str(getattr(trainer, "last", save_dir / "weights" / "last.pt"))).resolve()
+        history = _training_history_summary(save_dir)
+        metrics = _numeric_metrics(dict(getattr(trainer, "metrics", {}) or {}))
+        baseline: dict[str, Any] | None = None
+        baseline_error: str | None = None
+        if config.get("benchmark", True):
+            _emit_worker("benchmark_start", model=Path(str(config["model"])).name)
+            try:
+                baseline = _benchmark_starting_model(
+                    str(config["model"]),
+                    str(config["data"]),
+                    int(config["imgsz"]),
+                    device,
+                    save_dir,
+                )
+                _emit_worker("benchmark_complete", baseline=baseline)
+            except Exception as exc:
+                baseline_error = _exception_text(exc)
+                _emit_worker("benchmark_unavailable", message=baseline_error)
+        starting_path = Path(str(config["model"]))
+        if not starting_path.is_absolute():
+            starting_path = DATASET_DIR / starting_path
+        recommendation = _model_recommendation(
+            metrics,
+            baseline,
+            best,
+            starting_path.resolve(),
+        )
         _emit_worker(
             "complete",
             save_dir=str(save_dir),
             best=str(best),
+            last=str(last),
             result=str(results),
+            metrics=metrics,
+            baseline=baseline,
+            baseline_error=baseline_error,
+            recommendation=recommendation,
+            requested_epochs=int(config["epochs"]),
+            **history,
         )
         return 0
     except Exception as exc:
@@ -643,6 +829,8 @@ class TrainerGui:
         self.process: subprocess.Popen[str] | None = None
         self.cancel_requested = False
         self.last_output: Path | None = None
+        self.last_report: dict[str, Any] | None = None
+        self.report_image_references: list[list[Any]] = []
         self.training_started_at: float | None = None
         self.gpu_total_gb: float | None = None
 
@@ -667,6 +855,7 @@ class TrainerGui:
             "name": tk.StringVar(value="pigeon-v1"),
             "update": tk.BooleanVar(value=False),
             "pin_memory": tk.BooleanVar(value=False),
+            "benchmark": tk.BooleanVar(value=True),
         }
         fields = (
             (
@@ -740,16 +929,21 @@ class TrainerGui:
             text="Use pinned data-loader memory (advanced; leave off on Windows)",
             variable=self.values["pin_memory"],
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(
+            settings,
+            text="Compare the trained model with the starting model after training",
+            variable=self.values["benchmark"],
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Button(
             settings,
             text="Restore recommended settings",
             command=self.restore_recommended,
-        ).grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(8, 0))
         ttk.Button(
             settings,
             text="What do these settings mean?",
             command=self.show_settings_help,
-        ).grid(row=6, column=1, sticky="e", pady=(8, 0))
+        ).grid(row=7, column=1, sticky="e", pady=(8, 0))
 
         self.summary = ttk.Label(outer, text="Checking dataset...")
         self.summary.pack(anchor="w", pady=(10, 4))
@@ -772,6 +966,13 @@ class TrainerGui:
             buttons, text="Open results", command=self.open_results, state="disabled"
         )
         self.open_button.pack(side="left")
+        self.report_button = ttk.Button(
+            buttons,
+            text="View training report",
+            command=self.show_training_report,
+            state="disabled",
+        )
+        self.report_button.pack(side="left", padx=8)
 
         self.log_widget = scrolledtext.ScrolledText(
             outer, height=20, wrap="word", font=("Consolas", 9)
@@ -796,6 +997,7 @@ class TrainerGui:
         for key, value in recommended.items():
             self.values[key].set(value)
         self.values["pin_memory"].set(False)
+        self.values["benchmark"].set(True)
 
     def show_settings_help(self) -> None:
         from tkinter import messagebox
@@ -815,6 +1017,9 @@ class TrainerGui:
             "automatically restarts with the safest 0-worker mode.\n\n"
             "Pinned memory: leave this off on Windows. It can slightly accelerate transfers, "
             "but the current PyTorch/Windows combination can fail in its pin-memory thread.\n\n"
+            "Starting-model comparison: leave this enabled to measure the untouched starting "
+            "model on the same validation images after training. It usually adds only a few "
+            "seconds.\n\n"
             "Device: auto now verifies CUDA and repairs CPU-only PyTorch automatically. It will "
             "not silently use CPU when an NVIDIA GPU is detected.",
             parent=self.root,
@@ -855,6 +1060,8 @@ class TrainerGui:
         self.start_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.open_button.configure(state="disabled")
+        self.report_button.configure(state="disabled")
+        self.last_report = None
         self.progress["value"] = 0
         self.status.configure(text="Preparing training environment...")
         self.details.configure(text="")
@@ -884,6 +1091,7 @@ class TrainerGui:
             seed=42,
             update=bool(self.values["update"].get()),
             pin_memory=bool(self.values["pin_memory"].get()),
+            benchmark=bool(self.values["benchmark"].get()),
         )
         if not config["model"]:
             raise ValueError("Starting model cannot be empty")
@@ -1050,14 +1258,32 @@ class TrainerGui:
             suffix = " | " + ", ".join(compact) if compact else ""
             self.status.configure(text=f"Completed epoch {epoch}/{epochs}{suffix}")
             self._update_timing(epoch / epochs, payload)
+        elif event == "benchmark_start":
+            self.status.configure(
+                text=f"Comparing with starting model {payload.get('model', '')}..."
+            )
+        elif event == "benchmark_complete":
+            baseline = payload.get("baseline") or {}
+            self.log(
+                "Starting-model benchmark: "
+                f"precision={float(baseline.get('precision', 0)):.3f}, "
+                f"recall={float(baseline.get('recall', 0)):.3f}, "
+                f"mAP50={float(baseline.get('map50', 0)):.3f}, "
+                f"mAP50-95={float(baseline.get('map50_95', 0)):.3f}"
+            )
+        elif event == "benchmark_unavailable":
+            self.log(f"Starting-model comparison unavailable: {payload.get('message')}")
         elif event == "complete":
             self.last_output = Path(str(payload["save_dir"]))
+            self.last_report = payload
             self.progress["value"] = 100
             self._finish_controls(f"Complete. Best model: {payload['best']}")
             if self.training_started_at is not None:
                 elapsed = time.monotonic() - self.training_started_at
                 self.details.configure(text=f"Total training time: {_format_duration(elapsed)}")
             self.open_button.configure(state="normal")
+            self.report_button.configure(state="normal")
+            self.root.after(100, self.show_training_report)
         elif event == "failure":
             if payload.get("retryable_safe_loader"):
                 self.status.configure(text="Data loader failed; preparing automatic safe retry...")
@@ -1106,6 +1332,178 @@ class TrainerGui:
         if process is not None and process.poll() is None:
             with suppress(OSError):
                 process.terminate()
+
+    def show_training_report(self) -> None:
+        report = self.last_report
+        if not report:
+            return
+
+        window = self.tk.Toplevel(self.root)
+        window.title("Training report")
+        window.geometry("1120x840")
+        window.minsize(820, 640)
+        outer = self.ttk.Frame(window, padding=14)
+        outer.pack(fill="both", expand=True)
+
+        self.ttk.Label(
+            outer, text="Training complete", font=("Segoe UI", 17, "bold")
+        ).pack(anchor="w")
+        epochs_completed = int(report.get("epochs_completed", 0) or 0)
+        requested_epochs = int(report.get("requested_epochs", 0) or 0)
+        best_epoch = report.get("best_epoch")
+        run_text = f"Completed {epochs_completed} of {requested_epochs} requested epochs"
+        if best_epoch:
+            run_text += f"; the strongest validation result was epoch {best_epoch}"
+        self.ttk.Label(outer, text=run_text).pack(anchor="w", pady=(2, 10))
+
+        recommendation = self.ttk.LabelFrame(outer, text="Recommendation", padding=10)
+        recommendation.pack(fill="x")
+        best_path = str(report.get("best", ""))
+        last_path = str(report.get("last", ""))
+        model_recommendation = dict(report.get("recommendation") or {})
+        recommended_path = str(model_recommendation.get("path") or best_path)
+        self.ttk.Label(
+            recommendation,
+            text=str(model_recommendation.get("label") or "Use best.pt"),
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w")
+        self.ttk.Label(
+            recommendation,
+            text=(
+                str(
+                    model_recommendation.get("reason")
+                    or "This checkpoint had the best held-out validation score."
+                )
+                + " last.pt is useful for resuming an interrupted run, but it is not the "
+                "deployment recommendation."
+            ),
+            wraplength=1030,
+        ).pack(anchor="w", pady=(2, 6))
+        path_row = self.ttk.Frame(recommendation)
+        path_row.pack(fill="x")
+        path_value = self.tk.StringVar(value=recommended_path)
+        self.ttk.Entry(path_row, textvariable=path_value, state="readonly").pack(
+            side="left", fill="x", expand=True
+        )
+
+        def copy_best_path() -> None:
+            window.clipboard_clear()
+            window.clipboard_append(recommended_path)
+
+        self.ttk.Button(path_row, text="Copy path", command=copy_best_path).pack(
+            side="left", padx=(8, 0)
+        )
+
+        metrics = dict(report.get("metrics") or {})
+        baseline = dict(report.get("baseline") or {})
+        metric_frame = self.ttk.Frame(outer)
+        metric_frame.pack(fill="x", pady=(10, 6))
+        metric_specs = (
+            ("Precision", "precision", "How often a predicted bird was correct"),
+            ("Recall", "recall", "How many labeled birds the model found"),
+            ("mAP50", "map50", "Detection quality at a forgiving box overlap"),
+            ("mAP50-95", "map50_95", "Detection and box quality across strict overlaps"),
+        )
+        for column, (label, key, explanation) in enumerate(metric_specs):
+            card = self.ttk.LabelFrame(metric_frame, text=label, padding=9)
+            card.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 4, 0 if column == 3 else 4),
+            )
+            value = _as_float(metrics.get(key))
+            self.ttk.Label(
+                card,
+                text=f"{value * 100:.1f}%" if value is not None else "—",
+                font=("Segoe UI", 15, "bold"),
+            ).pack(anchor="w")
+            baseline_value = _as_float(baseline.get(key))
+            if value is not None and baseline_value is not None:
+                change = (value - baseline_value) * 100
+                comparison = (
+                    f"Starting model {baseline_value * 100:.1f}%  |  {change:+.1f} points"
+                )
+            else:
+                comparison = explanation
+            self.ttk.Label(card, text=comparison, wraplength=235).pack(anchor="w", pady=(3, 0))
+            metric_frame.columnconfigure(column, weight=1)
+
+        if baseline:
+            self.ttk.Label(
+                outer,
+                text=(
+                    f"Comparison uses {baseline.get('model', 'the starting model')} on the same "
+                    "held-out validation images, restricted to its bird class."
+                ),
+                foreground="#555555",
+            ).pack(anchor="w", pady=(0, 6))
+        elif report.get("baseline_error"):
+            self.ttk.Label(
+                outer,
+                text=f"Starting-model comparison was unavailable: {report['baseline_error']}",
+                foreground="#8a5a00",
+                wraplength=1030,
+            ).pack(anchor="w", pady=(0, 6))
+
+        notebook = self.ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True, pady=(4, 0))
+        chart_titles = {
+            "results.png": "Training curves",
+            "BoxPR_curve.png": "Precision-recall",
+            "BoxF1_curve.png": "F1 vs confidence",
+            "BoxP_curve.png": "Precision vs confidence",
+            "BoxR_curve.png": "Recall vs confidence",
+            "confusion_matrix_normalized.png": "Normalized confusion matrix",
+            "confusion_matrix.png": "Confusion matrix",
+        }
+        image_references: list[Any] = []
+        for raw_path in report.get("charts") or []:
+            chart_path = Path(str(raw_path))
+            if not chart_path.is_file():
+                continue
+            tab = self.ttk.Frame(notebook, padding=8)
+            notebook.add(tab, text=chart_titles.get(chart_path.name, chart_path.stem))
+            try:
+                image = self.tk.PhotoImage(file=str(chart_path))
+                divisor = max(
+                    1,
+                    (image.width() + 1039) // 1040,
+                    (image.height() + 519) // 520,
+                )
+                if divisor > 1:
+                    image = image.subsample(divisor, divisor)
+                image_references.append(image)
+                self.ttk.Label(tab, image=image).pack(fill="both", expand=True)
+
+                def open_chart(path: Path = chart_path) -> None:
+                    os.startfile(path)  # type: ignore[attr-defined]
+
+                self.ttk.Button(
+                    tab,
+                    text="Open full-size graph",
+                    command=open_chart,
+                ).pack(pady=(6, 0))
+            except self.tk.TclError as exc:
+                self.ttk.Label(tab, text=f"Could not display {chart_path.name}: {exc}").pack()
+        if not image_references:
+            tab = self.ttk.Frame(notebook, padding=12)
+            notebook.add(tab, text="Graphs")
+            self.ttk.Label(tab, text="No generated graph files were found for this run.").pack()
+        self.report_image_references.append(image_references)
+
+        footer = self.ttk.Frame(outer)
+        footer.pack(fill="x", pady=(8, 0))
+        self.ttk.Button(footer, text="Open result folder", command=self.open_results).pack(
+            side="left"
+        )
+        if last_path:
+            self.ttk.Label(
+                footer,
+                text="Keep last.pt only if you may resume training later.",
+                foreground="#555555",
+            ).pack(side="left", padx=10)
+        self.ttk.Button(footer, text="Close", command=window.destroy).pack(side="right")
 
     def open_results(self) -> None:
         if self.last_output and self.last_output.exists():

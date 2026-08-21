@@ -31,6 +31,63 @@ def test_windows_pin_memory_failures_are_retryable(trainer_module: ModuleType) -
     assert not trainer_module._is_pin_memory_failure("CUDA out of memory")
 
 
+def test_training_history_selects_best_validation_epoch(
+    trainer_module: ModuleType, tmp_path: Path
+) -> None:
+    (tmp_path / "results.csv").write_text(
+        "epoch,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),"
+        "metrics/mAP50-95(B)\n"
+        "1,0.7,0.4,0.5,0.3\n"
+        "2,0.8,0.6,0.7,0.5\n"
+        "3,0.9,0.5,0.75,0.45\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "results.png").touch()
+
+    summary = trainer_module._training_history_summary(tmp_path)
+
+    assert summary["epochs_completed"] == 3
+    assert summary["best_epoch"] == 2
+    assert summary["charts"] == [str(tmp_path / "results.png")]
+
+
+def test_metric_names_are_normalized(trainer_module: ModuleType) -> None:
+    assert trainer_module._numeric_metrics(
+        {
+            "metrics/precision(B)": "0.91",
+            "metrics/recall(B)": 0.8,
+            "metrics/mAP50(B)": 0.84,
+            "metrics/mAP50-95(B)": 0.57,
+        }
+    ) == {
+        "precision": 0.91,
+        "recall": 0.8,
+        "map50": 0.84,
+        "map50_95": 0.57,
+    }
+
+
+def test_recommendation_uses_model_with_stronger_validation(
+    trainer_module: ModuleType, tmp_path: Path
+) -> None:
+    best = tmp_path / "best.pt"
+    starting = tmp_path / "yolov8n.pt"
+    trained = {"map50": 0.84, "map50_95": 0.57}
+    baseline = {"map50": 0.48, "map50_95": 0.37}
+
+    recommendation = trainer_module._model_recommendation(
+        trained, baseline, best, starting
+    )
+    assert recommendation["label"] == "Use best.pt"
+    assert recommendation["path"] == str(best)
+
+    recommendation = trainer_module._model_recommendation(
+        baseline, trained, best, starting
+    )
+    assert recommendation["label"] == "Keep the starting model (yolov8n.pt)"
+    assert recommendation["path"] == str(starting)
+
+
 def test_nvidia_smi_output_is_parsed(
     trainer_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -156,7 +156,10 @@ systemctl restart turret-control
    training environment, and opens a GUI with dataset validation, GPU status,
    live epoch/batch metrics, elapsed time, estimated remaining time, GPU-memory
    use, settings guidance, cancellation and a direct link to the resulting
-   `best.pt`. When NVIDIA hardware is present, the launcher installs and
+   `best.pt`. At completion it opens a report with precision, recall, mAP,
+   starting-model comparisons, the recommended checkpoint, training curves,
+   precision/recall/F1 confidence curves and confusion matrices. When NVIDIA
+   hardware is present, the launcher installs and
    verifies CUDA-enabled PyTorch and refuses to silently fall back to a
    CPU-only build. On Windows it leaves pinned loader memory disabled to avoid
    PyTorch driver-mapping failures; if parallel loading still fails, it
