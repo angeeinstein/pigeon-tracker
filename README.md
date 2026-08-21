@@ -154,8 +154,11 @@ systemctl restart turret-control
    `train_windows.bat`. It installs a standard Python runtime through `winget`
    when the machine only has the limited ESP-IDF Python, creates a reusable
    training environment, and opens a GUI with dataset validation, GPU status,
-   live epoch/batch metrics, cancellation and a direct link to the resulting
-   `best.pt`. The GPU is used only while training is running.
+   live epoch/batch metrics, elapsed time, estimated remaining time, GPU-memory
+   use, settings guidance, cancellation and a direct link to the resulting
+   `best.pt`. When NVIDIA hardware is present, the launcher installs and
+   verifies CUDA-enabled PyTorch and refuses to silently fall back to a
+   CPU-only build. The GPU is used only while training is running.
    Upload that checkpoint under **Settings → AI → Install a trained model**;
    give it a versioned name, select it, then save all settings to load it.
    Uploads are authenticated, limited to 512 MiB and installed atomically. An

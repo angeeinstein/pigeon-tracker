@@ -517,8 +517,11 @@ class DetectionCaptureStore:
                     "as empty negative examples.\n"
                     "On Windows, double-click train_windows.bat. It creates a reusable Python "
                     "environment, installs the required training packages, validates this "
-                    "dataset and opens a training GUI. The trained best.pt is written below "
-                    "the training-runs directory.\n"
+                    "dataset and opens a training GUI. NVIDIA hardware automatically receives "
+                    "and verifies CUDA-enabled PyTorch instead of silently training on CPU. "
+                    "The GUI explains its settings and shows batch/epoch progress, validation "
+                    "metrics, GPU memory, elapsed time and estimated remaining time. The trained "
+                    "best.pt is written below the training-runs directory.\n"
                     "Train/validation assignment keeps captures from the same camera episode "
                     "together. "
                     + (

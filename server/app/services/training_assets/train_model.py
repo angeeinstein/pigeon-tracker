@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,9 @@ from typing import Any
 
 APP_NAME = "Pigeon Tracker Model Trainer"
 DEPENDENCY = "ultralytics>=8.1,<9.0"
+CUDA_INDEX_URL = "https://download.pytorch.org/whl/cu126"
 EVENT_PREFIX = "__PIGEON_TRAINER__"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 DATASET_DIR = Path(__file__).resolve().parent
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", DATASET_DIR)) / "PigeonTrackerTrainer"
 VENV_DIR = APP_DATA_DIR / "venv"
@@ -136,16 +139,22 @@ def _worker_probe() -> int:
 
     cuda = bool(torch.cuda.is_available())
     devices = []
+    device_memory_gb = []
     if cuda:
         for index in range(torch.cuda.device_count()):
             devices.append(torch.cuda.get_device_name(index))
+            device_memory_gb.append(
+                round(torch.cuda.get_device_properties(index).total_memory / (1024**3), 1)
+            )
     _emit_worker(
         "probe",
         python=sys.version.split()[0],
         ultralytics=ultralytics.__version__,
         torch=torch.__version__,
+        cuda_version=torch.version.cuda,
         cuda=cuda,
         devices=devices,
+        device_memory_gb=device_memory_gb,
     )
     return 0
 
@@ -157,12 +166,36 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def _worker_train(config_path: Path) -> int:
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     config = json.loads(config_path.read_text(encoding="utf-8"))
 
     import torch
     from ultralytics import YOLO
+
+    nvml: Any | None = None
+    nvml_handle: Any | None = None
+    if torch.cuda.is_available():
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            nvml = pynvml
+            nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(torch.cuda.current_device())
+        except Exception:
+            nvml = None
+            nvml_handle = None
 
     requested_device = str(config["device"])
     device: str | int = requested_device
@@ -177,6 +210,22 @@ def _worker_train(config_path: Path) -> int:
     model = YOLO(config["model"])
     last_batch_report: dict[int, int] = {}
     batch_counts: dict[int, int] = {}
+
+    def gpu_telemetry() -> dict[str, float | None]:
+        telemetry: dict[str, float | None] = {
+            "gpu_utilization_pct": None,
+            "gpu_temperature_c": None,
+        }
+        if nvml is None or nvml_handle is None:
+            return telemetry
+        with suppress(Exception):
+            telemetry["gpu_utilization_pct"] = float(
+                nvml.nvmlDeviceGetUtilizationRates(nvml_handle).gpu
+            )
+            telemetry["gpu_temperature_c"] = float(
+                nvml.nvmlDeviceGetTemperature(nvml_handle, nvml.NVML_TEMPERATURE_GPU)
+            )
+        return telemetry
 
     def on_train_batch_end(trainer: Any) -> None:
         epoch = int(getattr(trainer, "epoch", 0)) + 1
@@ -195,6 +244,18 @@ def _worker_train(config_path: Path) -> int:
                 epochs=int(config["epochs"]),
                 batch=batch,
                 batches=batches,
+                batch_size=int(getattr(trainer, "batch_size", 0) or 0),
+                gpu_allocated_gb=(
+                    round(torch.cuda.memory_allocated() / (1024**3), 2)
+                    if torch.cuda.is_available()
+                    else None
+                ),
+                gpu_reserved_gb=(
+                    round(torch.cuda.memory_reserved() / (1024**3), 2)
+                    if torch.cuda.is_available()
+                    else None
+                ),
+                **gpu_telemetry(),
             )
 
     def on_fit_epoch_end(trainer: Any) -> None:
@@ -236,6 +297,9 @@ def _worker_train(config_path: Path) -> int:
         best=str(best),
         result=str(results),
     )
+    if nvml is not None:
+        with suppress(Exception):
+            nvml.nvmlShutdown()
     return 0
 
 
@@ -296,6 +360,72 @@ def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def _nvidia_smi() -> str | None:
+    program_files = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+    candidates = [
+        shutil.which("nvidia-smi"),
+        str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "nvidia-smi.exe"),
+        str(program_files / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"),
+    ]
+    return next(
+        (candidate for candidate in candidates if candidate and Path(candidate).is_file()), None
+    )
+
+
+def _nvidia_devices() -> list[dict[str, str]]:
+    executable = _nvidia_smi()
+    if not executable:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                "--query-gpu=name,driver_version,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    devices = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",", 2)]
+        if len(parts) == 3:
+            devices.append({"name": parts[0], "driver": parts[1], "memory_mb": parts[2]})
+    return devices
+
+
+def _torch_environment(python: Path) -> dict[str, Any]:
+    script = (
+        "import json, torch; "
+        "print(json.dumps({'version': torch.__version__, "
+        "'cuda': bool(torch.cuda.is_available()), 'cuda_version': torch.version.cuda, "
+        "'devices': [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}))"
+    )
+    result = subprocess.run(
+        [str(python), "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        return {"available": False, "error": result.stderr.strip()}
+    try:
+        return {"available": True, **json.loads(result.stdout.strip().splitlines()[-1])}
+    except (IndexError, json.JSONDecodeError):
+        return {"available": False, "error": result.stdout.strip() or result.stderr.strip()}
+
+
 def _stream_process(
     command: list[str],
     log: Callable[[str], None],
@@ -312,12 +442,13 @@ def _stream_process(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
     )
     if register:
         register(process)
     assert process.stdout is not None
     for raw_line in process.stdout:
-        line = raw_line.rstrip("\r\n")
+        line = ANSI_ESCAPE_RE.sub("", raw_line.rstrip("\r\n"))
         if line.startswith(EVENT_PREFIX):
             if event:
                 try:
@@ -332,10 +463,39 @@ def _stream_process(
     return code
 
 
+def _install_cuda_pytorch(
+    python: Path,
+    log: Callable[[str], None],
+    register: Callable[[subprocess.Popen[str] | None], None],
+) -> None:
+    code = _stream_process(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "torch",
+            "torchvision",
+            "--index-url",
+            CUDA_INDEX_URL,
+        ],
+        log,
+        register=register,
+    )
+    if code != 0:
+        raise RuntimeError(
+            "CUDA-enabled PyTorch installation failed. The CPU build was not used silently; "
+            "see the package log above."
+        )
+
+
 def _ensure_environment(
     log: Callable[[str], None],
     register: Callable[[subprocess.Popen[str] | None], None],
     update: bool,
+    requested_device: str,
 ) -> Path:
     python = _venv_python()
     if not python.is_file():
@@ -344,13 +504,29 @@ def _ensure_environment(
         import venv
 
         venv.EnvBuilder(with_pip=True, clear=False).create(VENV_DIR)
-    probe = subprocess.run(
+    import_probe = subprocess.run(
         [str(python), "-c", "import ultralytics, torch"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    if probe.returncode != 0 or update:
+    nvidia_devices = _nvidia_devices()
+    wants_cuda = requested_device.casefold() != "cpu" and bool(nvidia_devices)
+    if nvidia_devices:
+        descriptions = ", ".join(
+            f"{item['name']} ({item['memory_mb']} MiB, driver {item['driver']})"
+            for item in nvidia_devices
+        )
+        log(f"NVIDIA hardware detected: {descriptions}")
+
+    if import_probe.returncode != 0 and wants_cuda:
+        log(
+            "Installing the official CUDA 12.6 PyTorch build before the remaining training "
+            "dependencies. This is a large one-time download..."
+        )
+        _install_cuda_pytorch(python, log, register)
+
+    if import_probe.returncode != 0 or update:
         log(
             "Installing training dependencies. The first installation is large and can take "
             "several minutes..."
@@ -364,6 +540,27 @@ def _ensure_environment(
             raise RuntimeError(f"Dependency installation failed with exit code {code}")
     else:
         log("Training dependencies are already installed.")
+
+    torch_info = _torch_environment(python)
+    if wants_cuda and not torch_info.get("cuda"):
+        log(
+            f"CPU-only PyTorch {torch_info.get('version', '')} is installed. Replacing it with "
+            "the official CUDA 12.6 build for the detected NVIDIA GPU..."
+        )
+        _install_cuda_pytorch(python, log, register)
+        torch_info = _torch_environment(python)
+
+    if wants_cuda and not torch_info.get("cuda"):
+        raise RuntimeError(
+            "An NVIDIA GPU was detected, but PyTorch still cannot use CUDA after repair. "
+            f"PyTorch={torch_info.get('version')}, CUDA build={torch_info.get('cuda_version')}. "
+            "Update the NVIDIA driver and retry, or explicitly choose device 'cpu'."
+        )
+    if requested_device.casefold() not in {"auto", "cpu"} and not torch_info.get("cuda"):
+        raise RuntimeError(
+            f"Device '{requested_device}' requires CUDA, but no usable NVIDIA CUDA device "
+            "was found."
+        )
     return python
 
 
@@ -376,12 +573,14 @@ class TrainerGui:
         self.ttk = ttk
         self.root = tk.Tk()
         self.root.title(APP_NAME)
-        self.root.geometry("940x720")
-        self.root.minsize(760, 580)
+        self.root.geometry("1000x860")
+        self.root.minsize(820, 680)
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.process: subprocess.Popen[str] | None = None
         self.cancel_requested = False
         self.last_output: Path | None = None
+        self.training_started_at: float | None = None
+        self.gpu_total_gb: float | None = None
 
         outer = ttk.Frame(self.root, padding=14)
         outer.pack(fill="both", expand=True)
@@ -398,23 +597,57 @@ class TrainerGui:
             "imgsz": tk.StringVar(value="960"),
             "epochs": tk.StringVar(value="100"),
             "patience": tk.StringVar(value="20"),
-            "batch": tk.StringVar(value="8"),
-            "workers": tk.StringVar(value="2"),
+            "batch": tk.StringVar(value="-1"),
+            "workers": tk.StringVar(value="8"),
             "device": tk.StringVar(value="auto"),
             "name": tk.StringVar(value="pigeon-v1"),
             "update": tk.BooleanVar(value=False),
         }
         fields = (
-            ("Starting model", "model"),
-            ("Image size", "imgsz"),
-            ("Epochs", "epochs"),
-            ("Early-stop patience", "patience"),
-            ("Batch size", "batch"),
-            ("Data workers", "workers"),
-            ("Device (auto, 0, cpu)", "device"),
-            ("Run name", "name"),
+            (
+                "Starting model",
+                "model",
+                "yolov8n.pt matches the server. yolov8s.pt may be more accurate but is slower "
+                "there.",
+            ),
+            (
+                "Image size",
+                "imgsz",
+                "960 is recommended for these small birds; 1280 costs more time and VRAM.",
+            ),
+            (
+                "Epochs",
+                "epochs",
+                "Maximum passes through the data. Early stopping will usually finish sooner.",
+            ),
+            (
+                "Early-stop patience",
+                "patience",
+                "Stop after this many epochs without improvement. 20 is a good first run.",
+            ),
+            (
+                "Batch size",
+                "batch",
+                "Use -1 to choose a batch using about 60% of GPU memory; use 8 for CPU.",
+            ),
+            (
+                "Data workers",
+                "workers",
+                "8 suits this computer. Reduce to 2 if Windows data loading becomes unstable.",
+            ),
+            (
+                "Device (auto, 0, cpu)",
+                "device",
+                "auto uses the NVIDIA GPU when present; 0 forces GPU 0; cpu is an explicit "
+                "fallback.",
+            ),
+            (
+                "Run name",
+                "name",
+                "Use versioned names such as pigeon-v1, pigeon-v2, so results remain comparable.",
+            ),
         )
-        for index, (label, key) in enumerate(fields):
+        for index, (label, key, help_text) in enumerate(fields):
             row, column = divmod(index, 2)
             group = ttk.Frame(settings)
             group.grid(
@@ -426,6 +659,9 @@ class TrainerGui:
             )
             ttk.Label(group, text=label).pack(anchor="w")
             ttk.Entry(group, textvariable=self.values[key]).pack(fill="x")
+            ttk.Label(group, text=help_text, foreground="#666666", wraplength=440).pack(
+                anchor="w", pady=(1, 0)
+            )
         settings.columnconfigure(0, weight=1)
         settings.columnconfigure(1, weight=1)
         ttk.Checkbutton(
@@ -433,11 +669,23 @@ class TrainerGui:
             text="Update Ultralytics and training dependencies before starting",
             variable=self.values["update"],
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(
+            settings,
+            text="Restore recommended settings",
+            command=self.restore_recommended,
+        ).grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(
+            settings,
+            text="What do these settings mean?",
+            command=self.show_settings_help,
+        ).grid(row=5, column=1, sticky="e", pady=(8, 0))
 
         self.summary = ttk.Label(outer, text="Checking dataset...")
         self.summary.pack(anchor="w", pady=(10, 4))
         self.status = ttk.Label(outer, text="Ready")
         self.status.pack(anchor="w")
+        self.details = ttk.Label(outer, text="", foreground="#555555")
+        self.details.pack(anchor="w")
         self.progress = ttk.Progressbar(outer, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(4, 8))
 
@@ -462,6 +710,41 @@ class TrainerGui:
         self._show_dataset_counts()
         self.root.after(100, self._poll)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+    def restore_recommended(self) -> None:
+        recommended = {
+            "model": "yolov8n.pt",
+            "imgsz": "960",
+            "epochs": "100",
+            "patience": "20",
+            "batch": "-1",
+            "workers": "8",
+            "device": "auto",
+            "name": "pigeon-v1",
+        }
+        for key, value in recommended.items():
+            self.values[key].set(value)
+
+    def show_settings_help(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showinfo(
+            "Training settings guide",
+            "Recommended first run for this dataset and RTX 4070 SUPER:\n\n"
+            "Model: yolov8n.pt keeps server inference fast. Compare yolov8s.pt later only if "
+            "the small model still misses too many birds.\n\n"
+            "Image size: 960 preserves more detail for distant birds than 640. Try 1280 only "
+            "as a later accuracy experiment.\n\n"
+            "Epochs/patience: 100/20 is a ceiling plus automatic early stopping, not a promise "
+            "to run all 100 epochs.\n\n"
+            "Batch: -1 lets Ultralytics target about 60% of VRAM. A fixed smaller number is "
+            "useful only when diagnosing memory problems.\n\n"
+            "Workers: 8 prepares images in parallel for the GPU. Reduce it if Windows reports "
+            "worker errors.\n\n"
+            "Device: auto now verifies CUDA and repairs CPU-only PyTorch automatically. It will "
+            "not silently use CPU when an NVIDIA GPU is detected.",
+            parent=self.root,
+        )
 
     def _show_dataset_counts(self) -> None:
         try:
@@ -500,6 +783,9 @@ class TrainerGui:
         self.open_button.configure(state="disabled")
         self.progress["value"] = 0
         self.status.configure(text="Preparing training environment...")
+        self.details.configure(text="")
+        self.training_started_at = None
+        self.gpu_total_gb = None
         self.log_widget.configure(state="normal")
         self.log_widget.delete("1.0", "end")
         self.log_widget.configure(state="disabled")
@@ -531,7 +817,10 @@ class TrainerGui:
     def _run(self, config: dict[str, Any]) -> None:
         try:
             python = _ensure_environment(
-                self.log, self.register_process, bool(config.pop("update"))
+                self.log,
+                self.register_process,
+                bool(config.pop("update")),
+                str(config["device"]),
             )
             if self.cancel_requested:
                 self.events.put(("cancelled", None))
@@ -603,17 +892,27 @@ class TrainerGui:
         if event == "probe":
             if payload.get("cuda"):
                 names = ", ".join(payload.get("devices") or [])
-                self.log(f"GPU available: {names}")
+                memories = payload.get("device_memory_gb") or []
+                if memories:
+                    self.gpu_total_gb = float(memories[0])
+                memory_text = (
+                    f" ({', '.join(f'{float(value):g} GiB' for value in memories)})"
+                    if memories
+                    else ""
+                )
+                self.log(f"GPU available: {names}{memory_text}")
             else:
                 self.log(
                     "WARNING: CUDA is not available; training will use the CPU and be much slower."
                 )
             self.log(
                 f"Python {payload.get('python')}; PyTorch {payload.get('torch')}; "
+                f"CUDA runtime {payload.get('cuda_version') or 'none'}; "
                 f"Ultralytics {payload.get('ultralytics')}"
             )
         elif event == "training_start":
             gpu = payload.get("gpu") or "none"
+            self.training_started_at = time.monotonic()
             self.status.configure(text=f"Training on device {payload.get('device')} ({gpu})")
         elif event == "batch":
             epoch = int(payload.get("epoch", 1))
@@ -623,6 +922,7 @@ class TrainerGui:
             percent = ((epoch - 1) + min(1.0, batch / batches)) / epochs * 100
             self.progress["value"] = percent
             self.status.configure(text=f"Epoch {epoch}/{epochs}, batch {batch}/{batches}")
+            self._update_timing(percent / 100, payload)
         elif event == "epoch":
             epoch = int(payload.get("epoch", 1))
             epochs = max(1, int(payload.get("epochs", 1)))
@@ -639,11 +939,44 @@ class TrainerGui:
                     compact.append(f"{label}={float(metrics[key]):.3f}")
             suffix = " | " + ", ".join(compact) if compact else ""
             self.status.configure(text=f"Completed epoch {epoch}/{epochs}{suffix}")
+            self._update_timing(epoch / epochs, payload)
         elif event == "complete":
             self.last_output = Path(str(payload["save_dir"]))
             self.progress["value"] = 100
             self._finish_controls(f"Complete. Best model: {payload['best']}")
+            if self.training_started_at is not None:
+                elapsed = time.monotonic() - self.training_started_at
+                self.details.configure(text=f"Total training time: {_format_duration(elapsed)}")
             self.open_button.configure(state="normal")
+
+    def _update_timing(self, fraction: float, payload: dict[str, Any]) -> None:
+        if self.training_started_at is None:
+            return
+        elapsed = time.monotonic() - self.training_started_at
+        details = [f"Elapsed {_format_duration(elapsed)}"]
+        if fraction > 0.002:
+            remaining = elapsed * (1 - fraction) / fraction
+            details.append(f"estimated remaining {_format_duration(remaining)}")
+        allocated = payload.get("gpu_allocated_gb")
+        reserved = payload.get("gpu_reserved_gb")
+        if allocated is not None:
+            memory = f"GPU memory {float(allocated):g} GiB allocated"
+            if reserved is not None:
+                memory += f", {float(reserved):g} GiB reserved"
+            if self.gpu_total_gb:
+                memory += f" / {self.gpu_total_gb:g} GiB"
+            details.append(memory)
+        utilization = payload.get("gpu_utilization_pct")
+        temperature = payload.get("gpu_temperature_c")
+        if utilization is not None:
+            gpu_activity = f"GPU {float(utilization):g}%"
+            if temperature is not None:
+                gpu_activity += f" at {float(temperature):g}°C"
+            details.append(gpu_activity)
+        batch_size = int(payload.get("batch_size", 0) or 0)
+        if batch_size:
+            details.append(f"effective batch {batch_size}")
+        self.details.configure(text="  |  ".join(details))
 
     def _finish_controls(self, status: str) -> None:
         self.process = None
