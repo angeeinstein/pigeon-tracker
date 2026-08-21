@@ -898,6 +898,7 @@ class Runtime:
 
         return {
             **status,
+            "installed_models": self.installed_detector_models(),
             "available_classes": available,
             "validation_available": validation_available,
             "configured_classes": detector_classes,
@@ -906,6 +907,18 @@ class Runtime:
             "invalid_target_classes": invalid_target,
             "target_classes_excluded_by_detector": excluded_targets,
         }
+
+    def installed_detector_models(self) -> list[str]:
+        """Return local model checkpoints that can be selected in settings."""
+        models_dir = self.config.resolved_models_dir
+        try:
+            return sorted(
+                path.name
+                for path in models_dir.iterdir()
+                if path.is_file() and path.suffix.casefold() == ".pt"
+            )
+        except FileNotFoundError:
+            return []
 
     def system_info(self) -> dict[str, Any]:
         from app.vision.yolo_detector import gpu_info

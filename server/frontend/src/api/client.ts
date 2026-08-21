@@ -14,6 +14,7 @@ import type {
   DetectionCapturePage,
   DetectionReviewStatus,
   DetectorCatalog,
+  DetectorModelUpload,
   EventRecord,
   Health,
   OnvifDevice,
@@ -110,6 +111,16 @@ export const api = {
   health: () => request<Health>('/api/health'),
   system: () => request<Record<string, unknown>>('/api/system'),
   detectorCatalog: () => request<DetectorCatalog>('/api/detector/catalog'),
+  uploadDetectorModel: (file: File, filename: string, overwrite = false) =>
+    request<DetectorModelUpload>(
+      `/api/detector/models?filename=${encodeURIComponent(filename)}&overwrite=${overwrite}`,
+      {
+        method: 'POST',
+        body: file,
+        headers: { 'Content-Type': 'application/octet-stream' },
+      },
+      10 * 60 * 1000,
+    ),
 
   // --- auth ---------------------------------------------------------
   me: () =>

@@ -149,7 +149,18 @@ systemctl restart turret-control
    automatic captures, and mark bird-free frames as negative examples. Fully
    reviewed positives are protected from retention. **Export YOLO dataset**
    downloads the reviewed JPEGs, YOLO labels, episode-aware train/validation
-   split, dataset YAML, and an audit manifest; original proposals remain stored.
+   split, dataset YAML, an audit manifest, and a self-contained Windows training
+   launcher; original proposals remain stored. Extract the ZIP and double-click
+   `train_windows.bat`. It installs a standard Python runtime through `winget`
+   when the machine only has the limited ESP-IDF Python, creates a reusable
+   training environment, and opens a GUI with dataset validation, GPU status,
+   live epoch/batch metrics, cancellation and a direct link to the resulting
+   `best.pt`. The GPU is used only while training is running.
+   Upload that checkpoint under **Settings → AI → Install a trained model**;
+   give it a versioned name, select it, then save all settings to load it.
+   Uploads are authenticated, limited to 512 MiB and installed atomically. An
+   active model cannot be overwritten in place, so a failed new model load
+   leaves the previous working detector available.
 9. Only then: enable water output, arm, and turn on automatic targeting.
 
 A fresh install is disarmed with water output disabled. It stays that way until

@@ -8,8 +8,13 @@ model, so malformed input is rejected before it reaches the runtime.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
+import re
 import time
+from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -33,6 +38,8 @@ from app.version import version_info
 
 router = APIRouter(prefix="/api")
 ONVIF_PROFILE_TIMEOUT_S = 20.0
+MAX_MODEL_UPLOAD_BYTES = 512 * 1024 * 1024
+MODEL_FILENAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.pt", re.IGNORECASE)
 
 
 def _turret_error(exc: TurretError) -> HTTPException:
@@ -67,6 +74,113 @@ async def system(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
 async def detector_catalog(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     """Loaded model classes plus warnings for incompatible saved filters."""
     return runtime.detector_catalog()
+
+
+@router.post("/detector/models")
+async def upload_detector_model(
+    request: Request,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+    filename: str = Query(min_length=4, max_length=128),
+    overwrite: bool = Query(default=False),
+) -> dict[str, Any]:
+    """Install a locally trained PyTorch model without requiring server SSH."""
+    if Path(filename).name != filename or not MODEL_FILENAME_RE.fullmatch(filename):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "model filename must use only letters, numbers, dots, dashes or underscores "
+                "and end in .pt"
+            ),
+        )
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid Content-Length") from exc
+        if declared_size > MAX_MODEL_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="model exceeds the 512 MiB upload limit")
+
+    models_dir = runtime.config.resolved_models_dir
+    models_dir.mkdir(parents=True, exist_ok=True)
+    target = models_dir / filename
+    configured = Path(runtime.settings.detector.model_path).name
+    active_value = runtime.detector_catalog().get("active_model")
+    protected_models = {configured}
+    if active_value:
+        protected_models.add(Path(str(active_value)).name)
+    if target.exists() and not overwrite:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{filename} already exists; choose a versioned name or explicitly allow "
+                "replacement"
+            ),
+        )
+    if target.exists() and overwrite and filename in protected_models:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "the configured model cannot be replaced in place; upload it under a new "
+                "versioned name"
+            ),
+        )
+
+    temporary = models_dir / f".{filename}.{uuid4().hex}.upload"
+    size = 0
+    digest = hashlib.sha256()
+    prefix = bytearray()
+    try:
+        with temporary.open("xb") as output:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_MODEL_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="model exceeds the 512 MiB upload limit",
+                    )
+                if len(prefix) < 4:
+                    prefix.extend(chunk[: 4 - len(prefix)])
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if size == 0:
+            raise HTTPException(status_code=422, detail="uploaded model is empty")
+        if bytes(prefix) != b"PK\x03\x04":
+            raise HTTPException(
+                status_code=422,
+                detail="file is not a modern PyTorch .pt checkpoint (ZIP signature missing)",
+            )
+
+        if overwrite:
+            os.replace(temporary, target)
+        else:
+            try:
+                os.link(temporary, target)
+            except FileExistsError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"{filename} was installed by another request; choose a different name",
+                ) from exc
+            temporary.unlink()
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    await runtime.events.emit(
+        ev.CAT_SYSTEM,
+        "detector model uploaded",
+        data={"filename": filename, "size_bytes": size, "sha256": digest.hexdigest()},
+    )
+    return {
+        "filename": filename,
+        "size_bytes": size,
+        "sha256": digest.hexdigest(),
+        "installed_models": runtime.installed_detector_models(),
+    }
 
 
 @router.get("/scene-motion/mask")

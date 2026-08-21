@@ -75,7 +75,7 @@ export default function Dashboard() {
           </Banner>
         )}
 
-        <VideoView telemetry={telemetry} onPick={onPick} />
+        <VideoView telemetry={telemetry} onPick={onPick} expandable />
 
         <div className="flex flex-wrap items-center gap-2">
           {/* This is the automatic state machine's state, not the arm state -

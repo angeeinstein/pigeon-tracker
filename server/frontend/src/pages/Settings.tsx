@@ -440,6 +440,122 @@ function DetectorModelStatus({
   );
 }
 
+function DetectorModelManager({
+  catalog,
+  onSelect,
+  onCatalogReload,
+}: {
+  catalog: DetectorCatalog | null;
+  onSelect: (filename: string) => void;
+  onCatalogReload: () => void;
+}) {
+  const inputId = useId();
+  const [file, setFile] = useState<File | null>(null);
+  const [filename, setFilename] = useState('pigeon-v1.pt');
+  const [overwrite, setOverwrite] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const { notify } = useToast();
+
+  const chooseFile = (selected: File | null) => {
+    setFile(selected);
+    if (!selected) return;
+    const clean = selected.name.replace(/[^A-Za-z0-9._-]+/g, '-');
+    setFilename(clean.toLowerCase() === 'best.pt' ? 'pigeon-v1.pt' : clean);
+  };
+
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const result = await api.uploadDetectorModel(file, filename.trim(), overwrite);
+      onSelect(result.filename);
+      onCatalogReload();
+      notify(`${result.filename} uploaded and selected. Save all changes to activate it.`, 'good');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'bad');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="my-2 rounded-lg border-2 border-accent/25 bg-panelalt/45 p-3 md:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-ink">Install a trained model</p>
+          <p className="text-xs text-muted">
+            Upload the trainer&apos;s best.pt directly to the server, then save this settings page
+            to load it. The previous model remains active if loading fails.
+          </p>
+        </div>
+        {catalog?.installed_models.length ? (
+          <span className="text-xs text-muted">
+            {catalog.installed_models.length} local model
+            {catalog.installed_models.length === 1 ? '' : 's'}
+          </span>
+        ) : null}
+      </div>
+
+      {catalog?.installed_models.length ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted">Installed:</span>
+          {catalog.installed_models.map((model) => (
+            <button
+              key={model}
+              type="button"
+              className="btn px-2 py-1 text-xs"
+              onClick={() => onSelect(model)}
+              title={`Select ${model}`}
+            >
+              {model}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="mt-3 grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <label className="block text-xs text-muted" htmlFor={inputId}>
+          Model checkpoint (.pt)
+          <input
+            id={inputId}
+            type="file"
+            accept=".pt,application/octet-stream"
+            className="field mt-1 block w-full file:mr-3 file:rounded file:border-0 file:bg-accent/15 file:px-2 file:py-1 file:text-ink"
+            disabled={uploading}
+            onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="block text-xs text-muted">
+          Store on server as
+          <input
+            className="field mt-1"
+            value={filename}
+            disabled={uploading}
+            onChange={(event) => setFilename(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="btn btn-primary px-3 py-2 text-xs"
+          disabled={!file || !filename.trim() || uploading}
+          onClick={upload}
+        >
+          {uploading ? 'Uploading…' : 'Upload and select'}
+        </button>
+      </div>
+      <label className="mt-2 flex items-center gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={overwrite}
+          disabled={uploading}
+          onChange={(event) => setOverwrite(event.target.checked)}
+        />
+        Replace an existing file with this name (the currently configured model is protected)
+      </label>
+    </div>
+  );
+}
+
 function SceneMotionPreview({
   enabled,
   minAreaRatio,
@@ -684,6 +800,7 @@ export default function Settings() {
         defaults={defaults}
         detectorCatalog={catalog.data}
         detectorCatalogError={catalog.error}
+        onDetectorCatalogReload={catalog.reload}
         update={(patch) => updateSection(tab, patch)}
         setDraft={setDraft}
         onCameraAdded={cameraAdded}
@@ -699,6 +816,7 @@ function SectionEditor({
   defaults,
   detectorCatalog,
   detectorCatalogError,
+  onDetectorCatalogReload,
   update,
   setDraft,
   onCameraAdded,
@@ -709,6 +827,7 @@ function SectionEditor({
   defaults: SettingsType;
   detectorCatalog: DetectorCatalog | null;
   detectorCatalogError: string | null;
+  onDetectorCatalogReload: () => void;
   update: (patch: Record<string, unknown>) => void;
   setDraft: Dispatch<SetStateAction<SettingsType | null>>;
   onCameraAdded: (cameras: SettingsType['cameras']) => void;
@@ -747,6 +866,7 @@ function SectionEditor({
             allSettingsDraft={draft}
             detectorCatalog={detectorCatalog}
             detectorCatalogError={detectorCatalogError}
+            onDetectorCatalogReload={onDetectorCatalogReload}
             update={update}
             onCameraAdded={onCameraAdded}
           />
@@ -762,6 +882,7 @@ function Fields({
   allSettingsDraft,
   detectorCatalog,
   detectorCatalogError,
+  onDetectorCatalogReload,
   update,
   onCameraAdded,
 }: {
@@ -770,6 +891,7 @@ function Fields({
   allSettingsDraft: SettingsType;
   detectorCatalog: DetectorCatalog | null;
   detectorCatalogError: string | null;
+  onDetectorCatalogReload: () => void;
   update: (patch: Record<string, unknown>) => void;
   onCameraAdded: (cameras: SettingsType['cameras']) => void;
 }) {
@@ -816,6 +938,11 @@ function Fields({
             value={value.model_path}
             onChange={(v) => update({ model_path: v })}
             hint="File in the models directory, an absolute path, or a name ultralytics can fetch (yolov8n.pt)."
+          />
+          <DetectorModelManager
+            catalog={detectorCatalog}
+            onSelect={(model) => update({ model_path: model })}
+            onCatalogReload={onDetectorCatalogReload}
           />
           <SelectField
             label="Device"

@@ -147,6 +147,36 @@ class TestSettings:
                 json={"detector": original["detector"], "targeting": original["targeting"]},
             )
 
+    def test_detector_model_upload_is_validated_and_listed(self, client: TestClient) -> None:
+        checkpoint = b"PK\x03\x04" + b"test-checkpoint"
+        uploaded = client.post(
+            "/api/detector/models?filename=pigeon-v1.pt",
+            content=checkpoint,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert uploaded.status_code == 200
+        assert uploaded.json()["filename"] == "pigeon-v1.pt"
+        assert uploaded.json()["size_bytes"] == len(checkpoint)
+        assert "pigeon-v1.pt" in uploaded.json()["installed_models"]
+        assert "pigeon-v1.pt" in client.get("/api/detector/catalog").json()["installed_models"]
+
+        duplicate = client.post(
+            "/api/detector/models?filename=pigeon-v1.pt",
+            content=checkpoint,
+        )
+        assert duplicate.status_code == 409
+
+        invalid = client.post(
+            "/api/detector/models?filename=not-a-model.pt",
+            content=b"not a PyTorch checkpoint",
+        )
+        assert invalid.status_code == 422
+        traversal = client.post(
+            "/api/detector/models?filename=../outside.pt",
+            content=checkpoint,
+        )
+        assert traversal.status_code == 422
+
 
 class TestCameraOnboarding:
     def test_discovery_and_profiles_do_not_echo_password(
@@ -414,6 +444,14 @@ class TestDetectionCaptures:
             manifest = json.loads(archive.read("pigeon-dataset/manifest.json"))
             assert manifest["captures"][0]["accepted_boxes"][0]["review_label"] == "bird"
             assert "pigeon-dataset/dataset.yaml" in names
+            assert "pigeon-dataset/train_model.py" in names
+            assert "pigeon-dataset/train_windows.bat" in names
+            trainer_source = archive.read("pigeon-dataset/train_model.py").decode()
+            compile(trainer_source, "train_model.py", "exec")
+            assert (
+                "double-click train_windows.bat"
+                in archive.read("pigeon-dataset/README.txt").decode()
+            )
 
         rejected = client.patch(
             f"/api/detection-captures/{capture['id']}",

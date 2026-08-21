@@ -76,6 +76,7 @@ export default function Cameras() {
               showTracks={isPrimary}
               showAimMarkers={isPrimary}
               cursor="default"
+              expandable
             />
           </Card>
 

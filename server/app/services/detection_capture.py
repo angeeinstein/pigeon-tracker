@@ -515,6 +515,10 @@ class DetectionCaptureStore:
                     "YOLO detection dataset exported by pigeon-tracker.\n"
                     "Only individually accepted boxes are labels. Rejected frames are included "
                     "as empty negative examples.\n"
+                    "On Windows, double-click train_windows.bat. It creates a reusable Python "
+                    "environment, installs the required training packages, validates this "
+                    "dataset and opens a training GUI. The trained best.pt is written below "
+                    "the training-runs directory.\n"
                     "Train/validation assignment keeps captures from the same camera episode "
                     "together. "
                     + (
@@ -525,6 +529,12 @@ class DetectionCaptureStore:
                         "episode before evaluating a model.\n"
                     ),
                 )
+                training_assets = Path(__file__).resolve().with_name("training_assets")
+                for asset_name in ("train_model.py", "train_windows.bat"):
+                    archive.write(
+                        training_assets / asset_name,
+                        f"pigeon-dataset/{asset_name}",
+                    )
         except Exception:
             path.unlink(missing_ok=True)
             raise

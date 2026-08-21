@@ -229,6 +229,7 @@ export interface DetectorCatalog {
   device: string;
   model: string;
   classes: string[];
+  installed_models: string[];
   available_classes: string[];
   configured_backend: string;
   configured_model: string;
@@ -244,6 +245,13 @@ export interface DetectorCatalog {
   invalid_detector_classes: string[];
   invalid_target_classes: string[];
   target_classes_excluded_by_detector: string[];
+}
+
+export interface DetectorModelUpload {
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  installed_models: string[];
 }
 
 /** Settings sections. Kept loose where the UI only round-trips values. */
