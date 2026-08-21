@@ -38,6 +38,7 @@ from app.version import version_info
 
 router = APIRouter(prefix="/api")
 ONVIF_PROFILE_TIMEOUT_S = 20.0
+DETECTOR_MODEL_UPLOAD_PATH = "/api/detector/models"
 MAX_MODEL_UPLOAD_BYTES = 512 * 1024 * 1024
 MODEL_FILENAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.pt", re.IGNORECASE)
 

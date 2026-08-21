@@ -148,7 +148,9 @@ class TestSettings:
             )
 
     def test_detector_model_upload_is_validated_and_listed(self, client: TestClient) -> None:
-        checkpoint = b"PK\x03\x04" + b"test-checkpoint"
+        # Deliberately cross the normal 16 KiB JSON request limit. Model
+        # uploads are streamed and have their own 512 MiB limit.
+        checkpoint = b"PK\x03\x04" + b"x" * (20 * 1024)
         uploaded = client.post(
             "/api/detector/models?filename=pigeon-v1.pt",
             content=checkpoint,

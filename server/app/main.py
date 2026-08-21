@@ -50,18 +50,36 @@ npm run build</code></pre>
 
 
 class PayloadLimitMiddleware(BaseHTTPMiddleware):
-    """Reject oversized request bodies before they are buffered."""
+    """Reject oversized request bodies before they are buffered.
+
+    Normal JSON API calls use the deliberately small deployment limit.  Model
+    checkpoints are streamed to disk by their endpoint and have their own
+    substantially larger, independently enforced limit.
+    """
 
     def __init__(self, app: ASGIApp, max_bytes: int) -> None:
         super().__init__(app)
         self.max_bytes = max_bytes
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
+        max_bytes = self.max_bytes
+        if (
+            request.method == "POST"
+            and request.scope.get("path") == routes.DETECTOR_MODEL_UPLOAD_PATH
+        ):
+            max_bytes = routes.MAX_MODEL_UPLOAD_BYTES
         length = request.headers.get("content-length")
         if length is not None:
             with contextlib.suppress(ValueError):
-                if int(length) > self.max_bytes:
-                    return JSONResponse({"detail": "payload too large"}, status_code=413)
+                if int(length) > max_bytes:
+                    if max_bytes >= 1024 * 1024:
+                        limit = f"{max_bytes // (1024 * 1024)} MiB"
+                    else:
+                        limit = f"{max_bytes // 1024} KiB"
+                    return JSONResponse(
+                        {"detail": f"payload exceeds the {limit} request limit"},
+                        status_code=413,
+                    )
         return await call_next(request)
 
 
