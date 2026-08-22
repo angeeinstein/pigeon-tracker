@@ -167,16 +167,21 @@ class YoloDetector(Detector):
             threshold = min(self.settings.capture_confidence, self.settings.confidence)
             if not self.settings.capture_enabled:
                 threshold = self.settings.confidence
-        results = self._model.predict(
-            source=image,
-            imgsz=self.settings.input_size,
-            conf=threshold,
-            iou=self.settings.iou,
-            device=self.status.device,
-            half=self.settings.half and self.status.device == "cuda",
-            max_det=self.settings.max_detections,
-            verbose=False,
-        )
+        predict_options: dict[str, Any] = {
+            "source": image,
+            "imgsz": self.settings.input_size,
+            "conf": threshold,
+            "iou": self.settings.iou,
+            "device": self.status.device,
+            "max_det": self.settings.max_detections,
+            "verbose": False,
+        }
+        # Newer Ultralytics versions deprecate the explicit `half=False`
+        # argument and emit the warning on every inference. Only request the
+        # legacy option when the user has deliberately enabled it on CUDA.
+        if self.settings.half and self.status.device == "cuda":
+            predict_options["half"] = True
+        results = self._model.predict(**predict_options)
         detections: list[Detection] = []
         for result in results:
             boxes = getattr(result, "boxes", None)

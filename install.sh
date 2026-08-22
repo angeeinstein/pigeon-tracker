@@ -510,9 +510,13 @@ try:
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA unavailable")
-    major, minor = torch.cuda.get_device_capability(0)
-    if f"sm_{major}{minor}" not in torch.cuda.get_arch_list():
-        raise RuntimeError("the PyTorch wheel has no kernel for this GPU")
+    # A real kernel launch is the authoritative compatibility check. Requiring
+    # an exact architecture label is too strict: for example, an sm_60 cubin
+    # is forward-compatible with the Quadro P2000's sm_61 architecture.
+    value = (torch.ones(1, device="cuda") + 1).item()
+    if value != 2:
+        raise RuntimeError("CUDA calculation returned an unexpected result")
+    torch.cuda.synchronize()
 except Exception:
     sys.exit(1)
 PY
@@ -963,9 +967,13 @@ primary_address() {
 }
 
 summary() {
-    local address token
+    local address token show_token="${1:-0}"
     address="$(primary_address)"
-    token="$(grep -E '^TURRET_CONTROLLER_TOKEN=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)"
+    token="<stored in ${ENV_FILE}>"
+    if [[ "${show_token}" == "1" ]]; then
+        token="$(grep -E '^TURRET_CONTROLLER_TOKEN=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)"
+        token="${token:-<see ${ENV_FILE}>}"
+    fi
 
     cat <<EOF
 
@@ -989,7 +997,7 @@ ${C_BOLD}Next steps${C_RESET}
   1. Open the web interface and add your camera under Settings > Camera.
   2. Flash the ESP32 (firmware/README.md). Put this token in
      firmware/include/secrets.h:
-         #define TURRET_CONTROLLER_TOKEN "${token:-<see ${ENV_FILE}>}"
+         #define TURRET_CONTROLLER_TOKEN "${token}"
   3. Home the turret, then measure calibration points under Calibration.
   4. Draw zones, then enable automatic targeting when you are happy with it.
 
@@ -1018,7 +1026,7 @@ do_install() {
     wait_for_health
     apply_initial_ai_device
     verify_http_endpoints
-    summary
+    summary 1
 }
 
 do_update() {
@@ -1038,7 +1046,7 @@ do_update() {
     wait_for_health
     verify_http_endpoints
     ok "update complete"
-    summary
+    summary 0
 }
 
 do_repair() {

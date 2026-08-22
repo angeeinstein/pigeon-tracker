@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+import numpy as np
+
 from app.services.settings_schema import DetectorSettings
 from app.vision.detector import Detection, MockDetector
-from app.vision.yolo_detector import nvidia_device_exposed
+from app.vision.yolo_detector import YoloDetector, nvidia_device_exposed
 
 
 def detection(confidence: float) -> Detection:
@@ -55,3 +57,21 @@ def test_nvidia_device_requires_control_and_numbered_gpu_nodes(tmp_path: Path) -
 
     (tmp_path / "nvidiactl").touch()
     assert nvidia_device_exposed(tmp_path)
+
+
+def test_yolo_omits_deprecated_half_option_when_disabled(tmp_path: Path) -> None:
+    class Model:
+        options: dict[str, object] = {}
+
+        def predict(self, **options: object) -> list[object]:
+            self.options = options
+            return []
+
+    detector = YoloDetector(DetectorSettings(half=False), tmp_path)
+    model = Model()
+    detector._model = model
+    detector.status.device = "cuda"
+
+    detector.infer(np.zeros((32, 32, 3), dtype=np.uint8))
+
+    assert "half" not in model.options
