@@ -133,6 +133,22 @@ real Intel RAPL counters are readable; an LXC may hide them, and CPU load is
 never presented as a fabricated wattage estimate. Any exposed RAPL value is
 for the host CPU package, while CPU percentage and RAM cover the container.
 
+To measure CPU package power on the Proxmox host while that benchmark runs,
+copy `server/tools/monitor_host_power.py` to the host. Probe first, then log the
+host CPU plus only the GPU passed to the pigeon-tracker LXC (GPU 1 in this
+example). Both files use UTC timestamps so their phases can be aligned later:
+
+```bash
+python3 monitor_host_power.py --probe
+python3 monitor_host_power.py --gpu 1 --interval 2 \
+  --output /root/pigeon-host-power.csv
+```
+
+Stop the logger with Ctrl+C after the LXC benchmark finishes. RAPL measures the
+whole CPU package, not just the LXC, and CPU plus GPU still excludes the
+motherboard, disks and PSU conversion losses. A wall power meter is required
+for true whole-machine consumption.
+
 Existing configuration, calibration, zones and events are **never** overwritten
 by an update; they are backed up to `/var/backups/turret-control` first, and a
 failed update rolls the code back to the previous commit. Before declaring an
