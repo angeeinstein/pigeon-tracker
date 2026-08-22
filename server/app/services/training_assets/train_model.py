@@ -218,10 +218,10 @@ def _model_recommendation(
     trained_operating = _operating_point(trained_sweep)
     baseline_operating = _operating_point(baseline_sweep)
     if trained_operating and baseline_operating:
-        trained_is_safer = (
-            trained_operating["precision"] >= baseline_operating["precision"] - 0.02
-            and trained_operating["false_positive_image_rate"]
-            <= max(0.05, baseline_operating["false_positive_image_rate"] + 0.02)
+        trained_is_safer = trained_operating["precision"] >= baseline_operating[
+            "precision"
+        ] - 0.02 and trained_operating["false_positive_image_rate"] <= max(
+            0.05, baseline_operating["false_positive_image_rate"] + 0.02
         )
         trained_is_better = trained_operating["f1"] > baseline_operating["f1"]
         if not (trained_is_safer and trained_is_better):
@@ -284,11 +284,7 @@ def _threshold_statistics(
         for sample in samples:
             targets = [list(box) for box in sample["targets"]]
             predictions = sorted(
-                (
-                    item
-                    for item in sample["predictions"]
-                    if float(item["confidence"]) >= threshold
-                ),
+                (item for item in sample["predictions"] if float(item["confidence"]) >= threshold),
                 key=lambda item: float(item["confidence"]),
                 reverse=True,
             )
@@ -296,9 +292,7 @@ def _threshold_statistics(
             image_false_positives = 0
             for prediction in predictions:
                 box = list(prediction["bbox"])
-                matches = [
-                    (index, _box_iou(box, targets[index])) for index in unmatched
-                ]
+                matches = [(index, _box_iou(box, targets[index])) for index in unmatched]
                 best = max(matches, key=lambda item: item[1], default=None)
                 if best and best[1] >= match_iou:
                     true_positive += 1
@@ -359,9 +353,7 @@ def _recommend_thresholds(rows: list[dict[str, Any]]) -> dict[str, float]:
     if not rows:
         return {"operational": 0.35, "capture": 0.25, "rescan": 0.40}
     acceptable = [
-        row
-        for row in rows
-        if row["precision"] >= 0.90 and row["false_positive_image_rate"] <= 0.05
+        row for row in rows if row["precision"] >= 0.90 and row["false_positive_image_rate"] <= 0.05
     ]
     operational = max(acceptable, key=lambda row: (row["recall"], row["f1"]), default=None)
     if operational is None:
@@ -872,9 +864,7 @@ def _worker_train(config_path: Path) -> int:
         results = model.train(**train_arguments)
         trainer = model.trainer
         save_dir = Path(str(getattr(trainer, "save_dir", config["project"]))).resolve()
-        best = Path(
-            str(getattr(trainer, "best", save_dir / "weights" / "best.pt"))
-        ).resolve()
+        best = Path(str(getattr(trainer, "best", save_dir / "weights" / "best.pt"))).resolve()
         last = Path(str(getattr(trainer, "last", save_dir / "weights" / "last.pt"))).resolve()
         history = _training_history_summary(save_dir)
         metrics = _numeric_metrics(dict(getattr(trainer, "metrics", {}) or {}))
@@ -1586,9 +1576,7 @@ class TrainerGui:
         except Exception as exc:
             self.events.put(("error", str(exc)))
 
-    def _run_training_worker(
-        self, python: Path, config_path: Path, config: dict[str, Any]
-    ) -> int:
+    def _run_training_worker(self, python: Path, config_path: Path, config: dict[str, Any]) -> int:
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         self.worker_failure: dict[str, Any] | None = None
         self.events.put(("status", "Training..."))
@@ -1797,9 +1785,9 @@ class TrainerGui:
         outer = self.ttk.Frame(window, padding=14)
         outer.pack(fill="both", expand=True)
 
-        self.ttk.Label(
-            outer, text="Training complete", font=("Segoe UI", 17, "bold")
-        ).pack(anchor="w")
+        self.ttk.Label(outer, text="Training complete", font=("Segoe UI", 17, "bold")).pack(
+            anchor="w"
+        )
         epochs_completed = int(report.get("epochs_completed", 0) or 0)
         requested_epochs = int(report.get("requested_epochs", 0) or 0)
         best_epoch = report.get("best_epoch")
@@ -1873,9 +1861,7 @@ class TrainerGui:
             baseline_value = _as_float(baseline.get(key))
             if value is not None and baseline_value is not None:
                 change = (value - baseline_value) * 100
-                comparison = (
-                    f"Starting model {baseline_value * 100:.1f}%  |  {change:+.1f} points"
-                )
+                comparison = f"Starting model {baseline_value * 100:.1f}%  |  {change:+.1f} points"
             else:
                 comparison = explanation
             self.ttk.Label(card, text=comparison, wraplength=235).pack(anchor="w", pady=(3, 0))
@@ -1987,9 +1973,7 @@ class TrainerGui:
             day_tab = self.ttk.Frame(notebook, padding=8)
             notebook.add(day_tab, text="Results by day")
             day_columns = ("day", "images", "precision", "recall", "fp_images")
-            day_table = self.ttk.Treeview(
-                day_tab, columns=day_columns, show="headings", height=10
-            )
+            day_table = self.ttk.Treeview(day_tab, columns=day_columns, show="headings", height=10)
             for name, label in (
                 ("day", "Day"),
                 ("images", "Images"),

@@ -75,15 +75,11 @@ def test_recommendation_uses_model_with_stronger_validation(
     trained = {"map50": 0.84, "map50_95": 0.57}
     baseline = {"map50": 0.48, "map50_95": 0.37}
 
-    recommendation = trainer_module._model_recommendation(
-        trained, baseline, best, starting
-    )
+    recommendation = trainer_module._model_recommendation(trained, baseline, best, starting)
     assert recommendation["label"] == "Use best.pt"
     assert recommendation["path"] == str(best)
 
-    recommendation = trainer_module._model_recommendation(
-        baseline, trained, best, starting
-    )
+    recommendation = trainer_module._model_recommendation(baseline, trained, best, starting)
     assert recommendation["label"] == "Keep the starting model (yolov8n.pt)"
     assert recommendation["path"] == str(starting)
 
@@ -107,9 +103,7 @@ def test_threshold_sweep_exposes_negative_image_false_positives(
 
     sweep = trainer_module._threshold_statistics(samples)
     low = sweep["thresholds"][0]
-    operational = next(
-        row for row in sweep["thresholds"] if row["threshold"] == 0.35
-    )
+    operational = next(row for row in sweep["thresholds"] if row["threshold"] == 0.35)
 
     assert low["false_positive_images"] == 1
     assert low["fp"] == 2

@@ -92,9 +92,7 @@ class Runtime:
         self._tasks: list[asyncio.Task[Any]] = []
         self._last_selection: SelectionResult | None = None
         self._detection_last_seen: dict[tuple[str, str], float] = {}
-        self._low_evidence_history: dict[
-            tuple[str, str, str, str], tuple[float, list[Any]]
-        ] = {}
+        self._low_evidence_history: dict[tuple[str, str, str, str], tuple[float, list[Any]]] = {}
         self._low_evidence_suppressed: dict[tuple[str, str, str, str], int] = {}
         self._stopping = False
 

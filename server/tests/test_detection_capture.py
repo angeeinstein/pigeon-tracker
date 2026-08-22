@@ -94,9 +94,7 @@ async def test_rejecting_last_box_completes_negative_capture(
         jpeg_quality=80,
     )
 
-    completed = await store.review_annotation(
-        int(capture["id"]), 0, review_status="rejected"
-    )
+    completed = await store.review_annotation(int(capture["id"]), 0, review_status="rejected")
 
     assert completed is not None
     assert completed["review_status"] == "rejected"
@@ -251,9 +249,7 @@ async def test_current_navigation_survives_capture_leaving_review_filter(
         detector_settings={},
         jpeg_quality=80,
     )
-    await store.update_review(
-        int(current["id"]), review_status="rejected", review_label="not-bird"
-    )
+    await store.update_review(int(current["id"]), review_status="rejected", review_label="not-bird")
 
     context = await store.navigate(
         int(current["id"]), direction="current", review_status="unreviewed"

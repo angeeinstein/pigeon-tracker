@@ -98,7 +98,9 @@ def test_status_includes_bounded_external_log_tail(tmp_path: Path) -> None:
         json.dumps({"state": "updating", "phase": "python", "progress": 52}),
         encoding="utf-8",
     )
-    updater.log_file.write_text("\n".join(f"line {index}" for index in range(200)), encoding="utf-8")
+    updater.log_file.write_text(
+        "\n".join(f"line {index}" for index in range(200)), encoding="utf-8"
+    )
 
     result = updater.operation_status()
 

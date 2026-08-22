@@ -1261,7 +1261,7 @@ async def camera_onvif_profiles(
             ),
             timeout=ONVIF_PROFILE_TIMEOUT_S,
         )
-    except TimeoutError as exc:
+    except asyncio.TimeoutError as exc:
         raise HTTPException(
             status_code=504,
             detail=(

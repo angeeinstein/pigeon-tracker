@@ -168,9 +168,7 @@ class SystemUpdateManager:
         return output.strip()
 
     @staticmethod
-    async def _run_command(
-        *command: str, timeout_s: float
-    ) -> tuple[int, str, str]:
+    async def _run_command(*command: str, timeout_s: float) -> tuple[int, str, str]:
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -311,9 +309,7 @@ class SystemUpdateManager:
             # watches this exact file and invokes a command with no user input.
             self.request_file.unlink(missing_ok=True)
             temporary = self.request_file.with_suffix(".tmp")
-            temporary.write_text(
-                str(starting["requested_at"] or _utc_now()), encoding="utf-8"
-            )
+            temporary.write_text(str(starting["requested_at"] or _utc_now()), encoding="utf-8")
             os.replace(temporary, self.request_file)
         except OSError as exc:
             failed = {

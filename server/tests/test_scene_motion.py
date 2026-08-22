@@ -140,12 +140,8 @@ def test_weak_full_frame_proposal_does_not_suppress_motion_rescan() -> None:
         class_name=weak.class_name,
     )
 
-    assert not _motion_region_has_detection(
-        _region(), [weak], ["bird"], min_confidence=0.15
-    )
-    assert _motion_region_has_detection(
-        _region(), [strong], ["bird"], min_confidence=0.15
-    )
+    assert not _motion_region_has_detection(_region(), [weak], ["bird"], min_confidence=0.15)
+    assert _motion_region_has_detection(_region(), [strong], ["bird"], min_confidence=0.15)
 
 
 def test_motion_crop_results_are_deduplicated_after_mapping() -> None:

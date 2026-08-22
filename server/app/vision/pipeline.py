@@ -471,9 +471,9 @@ class VisionPipeline:
             return None
         # Ultralytics applies NMS inside each crop. Overlapping motion crops
         # still need one final pass after their boxes share native coordinates.
-        evidence_boxes = _deduplicate_detections(
-            evidence_boxes, self._settings.detector.iou
-        )[: self._settings.detector.max_detections]
+        evidence_boxes = _deduplicate_detections(evidence_boxes, self._settings.detector.iou)[
+            : self._settings.detector.max_detections
+        ]
         return MotionEvidence(
             image=native,
             detections=evidence_boxes,
@@ -526,9 +526,7 @@ def _detection_iou(left: Detection, right: Detection) -> float:
     return overlap / union if union > 0.0 else 0.0
 
 
-def _deduplicate_detections(
-    detections: list[Detection], iou_threshold: float
-) -> list[Detection]:
+def _deduplicate_detections(detections: list[Detection], iou_threshold: float) -> list[Detection]:
     """Class-aware NMS for boxes produced by separate motion crops."""
     kept: list[Detection] = []
     for candidate in sorted(detections, key=lambda item: item.confidence, reverse=True):
@@ -564,12 +562,8 @@ def _merge_crop_bounds(
             x2 = min(current[2], existing[2])
             y2 = min(current[3], existing[3])
             intersection = max(0, x2 - x1) * max(0, y2 - y1)
-            current_area = max(1, current[2] - current[0]) * max(
-                1, current[3] - current[1]
-            )
-            existing_area = max(1, existing[2] - existing[0]) * max(
-                1, existing[3] - existing[1]
-            )
+            current_area = max(1, current[2] - current[0]) * max(1, current[3] - current[1])
+            existing_area = max(1, existing[2] - existing[0]) * max(1, existing[3] - existing[1])
             if intersection / min(current_area, existing_area) >= overlap_threshold:
                 current = (
                     min(current[0], existing[0]),

@@ -189,11 +189,7 @@ class DetectionCaptureStore:
                 after,
                 before,
             )
-            stmt = (
-                select(DetectionCapture)
-                .where(*conditions)
-                .order_by(DetectionCapture.id.desc())
-            )
+            stmt = select(DetectionCapture).where(*conditions).order_by(DetectionCapture.id.desc())
             stmt = stmt.limit(max(1, min(limit, 500))).offset(max(0, offset))
             return [_capture_dict(row) for row in session.scalars(stmt).all()]
 
