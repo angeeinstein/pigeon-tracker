@@ -116,6 +116,23 @@ installation; the System maintenance update or `turret-update --gpu` retries
 GPU setup later. Allow several
 extra gigabytes of disk space for CUDA dependencies.
 
+After installation, compare CPU and GPU inference under the same live-camera
+workload with the standard-library benchmark. It disarms the system, switches
+the detector through the normal settings API, waits for each model reload,
+prints live inference/container/GPU measurements, restores the original
+detector settings and writes CSV plus JSON results:
+
+```bash
+/opt/turret-control/venv/bin/python \
+  /opt/turret-control/server/tools/benchmark_inference.py \
+  --duration 120 --warmup 20
+```
+
+GPU power is read from `nvidia-smi`. CPU package power is included only when
+real Intel RAPL counters are readable; an LXC may hide them, and CPU load is
+never presented as a fabricated wattage estimate. Any exposed RAPL value is
+for the host CPU package, while CPU percentage and RAM cover the container.
+
 Existing configuration, calibration, zones and events are **never** overwritten
 by an update; they are backed up to `/var/backups/turret-control` first, and a
 failed update rolls the code back to the previous commit. Before declaring an
