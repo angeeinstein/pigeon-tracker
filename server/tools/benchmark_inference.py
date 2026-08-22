@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.cookiejar import CookieJar
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -272,6 +273,17 @@ def collect_sample(
 ) -> dict[str, Any]:
     health = client.request("GET", "/api/health")
     vision, detector = _vision(health)
+    camera_status = health.get("camera")
+    cameras = camera_status.get("cameras", []) if isinstance(camera_status, dict) else []
+    connected_cameras = [
+        camera for camera in cameras if isinstance(camera, dict) and camera.get("connected")
+    ]
+    primary_id = camera_status.get("primary_id") if isinstance(camera_status, dict) else None
+    primary = next(
+        (camera for camera in connected_cameras if camera.get("camera_id") == primary_id), None
+    )
+    processing = vision.get("processing")
+    processing = processing if isinstance(processing, dict) else {}
     sample: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
@@ -283,8 +295,21 @@ def collect_sample(
         "detector_loaded": detector.get("loaded"),
         "inference_ms": _number(detector.get("last_inference_ms")),
         "inferences": detector.get("inferences"),
+        "pipeline_ticks": vision.get("ticks"),
         "effective_fps": _number(vision.get("effective_fps")),
         "target_fps": _number(vision.get("target_fps")),
+        "primary_camera_fps": _number(primary.get("fps")) if primary else None,
+        "connected_cameras": len(connected_cameras),
+        "connected_camera_fps_total": sum(
+            _number(camera.get("fps")) or 0.0 for camera in connected_cameras
+        ),
+        "pipeline_inference_ms_mean": _number(processing.get("inference_ms_mean")),
+        "pipeline_scene_motion_ms_mean": _number(processing.get("scene_motion_ms_mean")),
+        "pipeline_motion_rescan_ms_mean": _number(processing.get("motion_rescan_ms_mean")),
+        "pipeline_tracker_ms_mean": _number(processing.get("tracker_ms_mean")),
+        "pipeline_listeners_ms_mean": _number(processing.get("listeners_ms_mean")),
+        "pipeline_other_ms_mean": _number(processing.get("other_ms_mean")),
+        "pipeline_total_ms_mean": _number(processing.get("total_ms_mean")),
         "error": detector.get("error") or vision.get("error"),
         **resources.sample(),
         "cpu_power_w": cpu_power.sample(),
@@ -311,16 +336,53 @@ def _p95(samples: list[dict[str, Any]], key: str) -> float | None:
 
 def summarize(mode: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
     inferences = [int(value) for value in _values(samples, "inferences")]
+    ticks = [int(value) for value in _values(samples, "pipeline_ticks")]
+    elapsed = _values(samples, "elapsed_s")
+    duration_s = max(0.0, elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
+    inference_count = max(0, inferences[-1] - inferences[0]) if len(inferences) > 1 else 0
+    pipeline_count = max(0, ticks[-1] - ticks[0]) if len(ticks) > 1 else inference_count
+    progress_key = "pipeline_ticks" if len(ticks) > 1 else "inferences"
+    stall_s = 0.0
+    stall_intervals = 0
+    progress_samples = samples[:1]
+    if len(samples) > 1:
+        for previous, current in pairwise(samples):
+            previous_count = previous.get(progress_key)
+            current_count = current.get(progress_key)
+            if not isinstance(previous_count, int | float) or not isinstance(
+                current_count, int | float
+            ):
+                continue
+            if current_count > previous_count:
+                progress_samples.append(current)
+                continue
+            previous_elapsed = _number(previous.get("elapsed_s"))
+            current_elapsed = _number(current.get("elapsed_s"))
+            if previous_elapsed is not None and current_elapsed is not None:
+                stall_s += max(0.0, current_elapsed - previous_elapsed)
+            stall_intervals += 1
+    cpu_cores_mean = _mean(samples, "cpu_cores")
     return {
         "mode": mode,
         "actual_device": samples[-1].get("actual_device") if samples else None,
         "samples": len(samples),
-        "inferences_observed": max(0, inferences[-1] - inferences[0]) if inferences else 0,
-        "inference_ms_mean": _mean(samples, "inference_ms"),
-        "inference_ms_p95": _p95(samples, "inference_ms"),
+        "measurement_duration_s": duration_s,
+        "inferences_observed": inference_count,
+        "model_calls_per_s": inference_count / duration_s if duration_s else None,
+        "pipeline_results_observed": pipeline_count,
+        "observed_inference_fps": pipeline_count / duration_s if duration_s else None,
+        "no_progress_s": stall_s,
+        "no_progress_intervals": stall_intervals,
+        "inference_ms_mean": _mean(progress_samples, "inference_ms"),
+        "inference_ms_p95": _p95(progress_samples, "inference_ms"),
         "effective_fps_mean": _mean(samples, "effective_fps"),
         "cpu_percent_mean": _mean(samples, "cpu_percent"),
-        "cpu_cores_mean": _mean(samples, "cpu_cores"),
+        "cpu_cores_mean": cpu_cores_mean,
+        "cpu_core_seconds_per_inference": (
+            cpu_cores_mean * duration_s / pipeline_count
+            if cpu_cores_mean is not None and pipeline_count
+            else None
+        ),
         "cpu_power_w_mean": _mean(samples, "cpu_power_w"),
         "memory_mb_mean": _mean(samples, "memory_mb"),
         "memory_mb_max": max(_values(samples, "memory_mb"), default=None),
@@ -328,6 +390,15 @@ def summarize(mode: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
         "gpu_util_percent_mean": _mean(samples, "gpu_util_percent"),
         "gpu_memory_mb_mean": _mean(samples, "gpu_memory_mb"),
         "gpu_temperature_c_max": max(_values(samples, "gpu_temperature_c"), default=None),
+        "connected_cameras_max": max(_values(samples, "connected_cameras"), default=None),
+        "connected_camera_fps_total_mean": _mean(samples, "connected_camera_fps_total"),
+        "pipeline_inference_ms_mean": _mean(samples, "pipeline_inference_ms_mean"),
+        "pipeline_scene_motion_ms_mean": _mean(samples, "pipeline_scene_motion_ms_mean"),
+        "pipeline_motion_rescan_ms_mean": _mean(samples, "pipeline_motion_rescan_ms_mean"),
+        "pipeline_tracker_ms_mean": _mean(samples, "pipeline_tracker_ms_mean"),
+        "pipeline_listeners_ms_mean": _mean(samples, "pipeline_listeners_ms_mean"),
+        "pipeline_other_ms_mean": _mean(samples, "pipeline_other_ms_mean"),
+        "pipeline_total_ms_mean": _mean(samples, "pipeline_total_ms_mean"),
         "errors": sorted({str(sample["error"]) for sample in samples if sample.get("error")}),
     }
 
@@ -362,6 +433,20 @@ def compare(summaries: list[dict[str, Any]]) -> dict[str, float | None]:
         "gpu_inference_speedup_x": ratio(
             cpu.get("inference_ms_mean"), gpu.get("inference_ms_mean")
         ),
+        "gpu_observed_throughput_x": ratio(
+            gpu.get("observed_inference_fps"), cpu.get("observed_inference_fps")
+        ),
+        "gpu_cpu_core_seconds_per_inference_reduction_percent": (
+            (1.0 - core_seconds_ratio) * 100.0
+            if (
+                core_seconds_ratio := ratio(
+                    gpu.get("cpu_core_seconds_per_inference"),
+                    cpu.get("cpu_core_seconds_per_inference"),
+                )
+            )
+            is not None
+            else None
+        ),
         "gpu_cpu_percent_reduction_points": difference(
             cpu.get("cpu_percent_mean"), gpu.get("cpu_percent_mean")
         ),
@@ -385,6 +470,7 @@ def print_sample(sample: dict[str, Any]) -> None:
         f"device={sample.get('actual_device') or '?':<4}  "
         f"infer={_display(sample.get('inference_ms'), 'ms'):>8}  "
         f"fps={_display(sample.get('effective_fps')):>5}  "
+        f"calls={sample.get('inferences', '?'):>6}  "
         f"CPU={_display(sample.get('cpu_percent'), '%'):>7}  "
         f"CPU power={_display(sample.get('cpu_power_w'), 'W'):>7}  "
         f"RAM={_display(sample.get('memory_mb'), 'MiB', 0):>8}  "

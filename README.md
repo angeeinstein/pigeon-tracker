@@ -132,6 +132,12 @@ GPU power is read from `nvidia-smi`. CPU package power is included only when
 real Intel RAPL counters are readable; an LXC may hide them, and CPU load is
 never presented as a fabricated wattage estimate. Any exposed RAPL value is
 for the host CPU package, while CPU percentage and RAM cover the container.
+The JSON summary derives actual throughput and stalled time from the monotonic
+inference counter rather than a potentially stale displayed FPS value. It also
+reports connected-camera count and aggregate decoded FPS plus rolling timings
+for inference, scene motion, tracking, evidence listeners and other pipeline
+work. These distinguish neural-network work from camera decoding, which runs
+outside the vision tick and remains a CPU cost even with CUDA inference.
 
 To measure CPU package power on the Proxmox host while that benchmark runs,
 copy `server/tools/monitor_host_power.py` to the host. Probe first, then log the

@@ -78,6 +78,18 @@ def test_camera_change_clears_result_and_tracker_state() -> None:
     reset.assert_called_once()
 
 
+def test_effective_fps_counts_results_and_expires_when_results_stop() -> None:
+    pipeline = make_pipeline()
+
+    pipeline._note_loop_completion(10.0, True, 1 / 6)
+    pipeline._note_loop_completion(10.5, True, 1 / 6)
+    pipeline._note_loop_completion(11.0, False, 1 / 6)
+    assert pipeline.status()["effective_fps"] == 2.0
+
+    pipeline._note_loop_completion(13.0, False, 1 / 6)
+    assert pipeline.status()["effective_fps"] == 0.0
+
+
 @pytest.mark.asyncio
 async def test_failed_detector_replacement_keeps_working_model() -> None:
     pipeline = make_pipeline(frame_ts=time.monotonic())

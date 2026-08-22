@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -62,6 +63,11 @@ class VisionResult:
     detections: list[Detection] = field(default_factory=list)
     tracks: list[Track] = field(default_factory=list)
     inference_ms: float = 0.0
+    scene_motion_ms: float = 0.0
+    motion_rescan_ms: float = 0.0
+    tracker_ms: float = 0.0
+    listeners_ms: float = 0.0
+    other_ms: float = 0.0
     total_ms: float = 0.0
     #: The exact source frame. Kept out of serialised payloads and used by
     #: evidence listeners immediately after inference.
@@ -81,9 +87,14 @@ class VisionResult:
             "detections": len(self.detections),
             "tracks": [t.as_dict() for t in self.tracks],
             "inference_ms": round(self.inference_ms, 1),
+            "scene_motion_ms": round(self.scene_motion_ms, 1),
+            "tracker_ms": round(self.tracker_ms, 1),
+            "listeners_ms": round(self.listeners_ms, 1),
+            "other_ms": round(self.other_ms, 1),
             "total_ms": round(self.total_ms, 1),
             "motion_rescans": len(self.motion_evidence.regions) if self.motion_evidence else 0,
-            "motion_rescan_ms": (
+            "motion_rescan_ms": round(self.motion_rescan_ms, 1),
+            "motion_rescan_inference_ms": (
                 round(self.motion_evidence.rescan_ms, 1) if self.motion_evidence else 0.0
             ),
         }
@@ -118,6 +129,8 @@ class VisionPipeline:
         self._error: str | None = None
         self._ticks = 0
         self._effective_fps = 0.0
+        self._recent_result_times: list[float] = []
+        self._timing_samples: list[dict[str, float]] = []
 
     # -- lifecycle -------------------------------------------------------
     async def start(self) -> None:
@@ -146,6 +159,10 @@ class VisionPipeline:
             self._tracker = create_tracker(settings.tracker)
         if "scene_motion" in changed:
             self._scene_motion.update_settings(settings.scene_motion)
+        if changed & {"detector", "tracker", "scene_motion", "cameras"}:
+            self._timing_samples.clear()
+            self._recent_result_times.clear()
+            self._effective_fps = 0.0
         if "cameras" in changed:
             # Never carry detections or track history across a primary-camera
             # switch or source restart.
@@ -158,6 +175,8 @@ class VisionPipeline:
 
     def _invalidate_result(self) -> None:
         """Discard detections and tracking history after an input interruption."""
+        self._recent_result_times.clear()
+        self._effective_fps = 0.0
         if self._latest is None:
             return
         self._latest = None
@@ -233,6 +252,7 @@ class VisionPipeline:
             "target_fps": self._settings.detector.fps,
             "effective_fps": round(self._effective_fps, 2),
             "ticks": self._ticks,
+            "processing": self._processing_status(),
             "error": self._error,
             "last_result_age_s": (
                 round(time.monotonic() - raw_result.frame_ts, 2) if raw_result else None
@@ -303,11 +323,11 @@ class VisionPipeline:
 
     async def _run(self) -> None:
         log.info("vision pipeline started")
-        recent: list[float] = []
         while not self._stop.is_set():
             settings = self._settings.detector
             interval = 1.0 / max(0.2, settings.fps)
             started = time.monotonic()
+            ticks_before = self._ticks
 
             try:
                 await self._tick()
@@ -321,11 +341,7 @@ class VisionPipeline:
                 continue
 
             now = time.monotonic()
-            recent.append(now)
-            if len(recent) > 20:
-                del recent[: len(recent) - 20]
-            if len(recent) > 1 and recent[-1] > recent[0]:
-                self._effective_fps = (len(recent) - 1) / (recent[-1] - recent[0])
+            self._note_loop_completion(now, self._ticks > ticks_before, interval)
 
             await asyncio.sleep(max(0.0, interval - (now - started)))
         log.info("vision pipeline stopped")
@@ -354,14 +370,20 @@ class VisionPipeline:
         self._last_frame_seq = frame.seq
 
         tick_started = time.perf_counter()
+        inference_started = time.perf_counter()
         raw_detections = await asyncio.to_thread(detector.infer, frame.image)
+        inference_wall_ms = (time.perf_counter() - inference_started) * 1000.0
         proposals = detector.capturable(raw_detections)
         detections = detector.operational(raw_detections)
         inference_ms = detector.status.last_inference_ms
 
         motion_evidence: MotionEvidence | None = None
+        scene_motion_ms = 0.0
+        motion_rescan_ms = 0.0
         if self._settings.scene_motion.enabled:
+            motion_started = time.perf_counter()
             analysis = await asyncio.to_thread(self._scene_motion.update, frame.image, frame.ts)
+            scene_motion_ms = (time.perf_counter() - motion_started) * 1000.0
             unexplained = [
                 region
                 for region in analysis.regions
@@ -374,12 +396,16 @@ class VisionPipeline:
             ]
             due = self._scene_motion.claim_rescans(unexplained, frame.ts)
             if due:
+                rescan_started = time.perf_counter()
                 motion_evidence = await self._rescan_motion(detector, frame, due)
+                motion_rescan_ms = (time.perf_counter() - rescan_started) * 1000.0
 
+        tracker_started = time.perf_counter()
         if self._settings.tracker.enabled:
             tracks = self._tracker.update(detections, now=frame.wall_ts)
         else:
             tracks = _tracks_from_detections(detections, frame.wall_ts)
+        tracker_ms = (time.perf_counter() - tracker_started) * 1000.0
 
         result = VisionResult(
             camera_id=frame.camera_id,
@@ -391,8 +417,10 @@ class VisionPipeline:
             proposals=proposals,
             detections=detections,
             tracks=tracks,
-            inference_ms=inference_ms,
-            total_ms=(time.perf_counter() - tick_started) * 1000.0,
+            inference_ms=max(inference_ms, inference_wall_ms),
+            scene_motion_ms=scene_motion_ms,
+            motion_rescan_ms=motion_rescan_ms,
+            tracker_ms=tracker_ms,
             image=frame.image,
             motion_evidence=motion_evidence,
         )
@@ -400,11 +428,68 @@ class VisionPipeline:
         self._ticks += 1
         self._error = detector.status.error
 
+        listeners_started = time.perf_counter()
         for listener in list(self._listeners):
             try:
                 await listener(result)
             except Exception:
                 log.exception("vision listener failed")
+        result.listeners_ms = (time.perf_counter() - listeners_started) * 1000.0
+        result.total_ms = (time.perf_counter() - tick_started) * 1000.0
+        accounted_ms = (
+            result.inference_ms
+            + result.scene_motion_ms
+            + result.motion_rescan_ms
+            + result.tracker_ms
+            + result.listeners_ms
+        )
+        result.other_ms = max(0.0, result.total_ms - accounted_ms)
+        self._record_timing(result)
+
+    def _note_loop_completion(self, now: float, produced_result: bool, interval: float) -> None:
+        """Track completed inference results, not idle pipeline wake-ups."""
+        if produced_result:
+            self._recent_result_times.append(now)
+            if len(self._recent_result_times) > 20:
+                del self._recent_result_times[: len(self._recent_result_times) - 20]
+
+        stale_after = max(2.0, interval * 3.0)
+        if not self._recent_result_times or now - self._recent_result_times[-1] > stale_after:
+            self._effective_fps = 0.0
+            return
+        if len(self._recent_result_times) > 1:
+            elapsed = self._recent_result_times[-1] - self._recent_result_times[0]
+            if elapsed > 0:
+                self._effective_fps = (len(self._recent_result_times) - 1) / elapsed
+
+    def _record_timing(self, result: VisionResult) -> None:
+        self._timing_samples.append(
+            {
+                "inference_ms": result.inference_ms,
+                "scene_motion_ms": result.scene_motion_ms,
+                "motion_rescan_ms": result.motion_rescan_ms,
+                "tracker_ms": result.tracker_ms,
+                "listeners_ms": result.listeners_ms,
+                "other_ms": result.other_ms,
+                "total_ms": result.total_ms,
+            }
+        )
+        if len(self._timing_samples) > 120:
+            del self._timing_samples[: len(self._timing_samples) - 120]
+
+    def _processing_status(self) -> dict[str, object]:
+        if not self._timing_samples:
+            return {"samples": 0}
+        status: dict[str, object] = {"samples": len(self._timing_samples)}
+        for key in self._timing_samples[0]:
+            values = sorted(sample[key] for sample in self._timing_samples)
+            status[f"{key}_mean"] = round(sum(values) / len(values), 2)
+            index = min(len(values) - 1, math.ceil(len(values) * 0.95) - 1)
+            status[f"{key}_p95"] = round(values[index], 2)
+        status["motion_rescan_results"] = sum(
+            1 for sample in self._timing_samples if sample["motion_rescan_ms"] > 0
+        )
+        return status
 
     async def _rescan_motion(
         self,
