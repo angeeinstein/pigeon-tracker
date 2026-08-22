@@ -58,7 +58,11 @@ simply type `update` to open the management menu. It checks the installed and
 GitHub versions before offering update, endpoint verification, restart, repair,
 logs, an immediate backup, uninstall-with-data-kept, and a separately confirmed
 full purge. If another program already owns the generic `update` command, use
-`turret-update` instead. Flags remain available for automation:
+`turret-update` instead. Pre-update archives contain the configuration,
+credentials, database and other small metadata, but do not duplicate camera
+evidence, snapshots or model files that an update never modifies. Use dataset
+export or separate storage when you want an off-machine evidence backup. Flags
+remain available for automation:
 
 ```bash
 sudo bash install.sh --update --yes
@@ -99,7 +103,7 @@ and fetches the web application plus one of its built assets.
 | `/opt/turret-control`       | code and virtualenv (root-owned)          |
 | `/etc/turret-control`       | `turret.env` — secrets, 0640 root:turret  |
 | `/var/lib/turret-control`   | database, models, snapshots, update status/log |
-| `/var/backups/turret-control` | pre-update backups (last 5)             |
+| `/var/backups/turret-control` | configuration/database backups (last 5) |
 
 ```bash
 journalctl -u turret-control -f

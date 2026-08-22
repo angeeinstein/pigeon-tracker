@@ -290,39 +290,37 @@ function UpdateCard({
         </Banner>
       ) : null}
 
-      {status && status.state !== 'idle' ? (
+      {status?.state === 'succeeded' ? (
         <div className="mt-4 rounded-lg border border-edge bg-panelalt/35 p-3">
-          <div className="mb-2 flex items-center justify-between gap-3 text-xs">
-            <span className="font-medium text-ink">{status.message}</span>
-            <span className="tabular text-muted">{status.progress}%</span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-edge/70">
-            <div
-              className={`h-full transition-[width] duration-500 ${status.state === 'failed' ? 'bg-bad' : 'bg-accent'}`}
-              style={{ width: `${Math.max(1, Math.min(100, status.progress))}%` }}
-            />
-          </div>
-          <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-muted">
-            <span>Phase: {status.phase}</span>
-            {status.started_at ? (
-              <span>Started: {new Date(status.started_at).toLocaleString()}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-good">✓ Update finished successfully</span>
+            {status.finished_at ? (
+              <span className="text-muted">
+                Finished: {new Date(status.finished_at).toLocaleString()}
+              </span>
             ) : null}
           </div>
+          <p className="mt-2 text-xs text-muted">{status.message}</p>
+          {updateRequested ? (
+            <p className="mt-2 text-xs text-good">
+              Endpoints passed. Reconnecting and refreshing this page...
+            </p>
+          ) : null}
+          <details className="mt-3 border-t border-edge pt-2">
+            <summary className="cursor-pointer select-none text-xs font-medium text-muted hover:text-ink">
+              Show update progress and logs
+            </summary>
+            <UpdateProgress status={status} />
+          </details>
+        </div>
+      ) : status && status.state !== 'idle' ? (
+        <div className="mt-4 rounded-lg border border-edge bg-panelalt/35 p-3">
           {status.state === 'failed' ? (
             <Banner tone="warn">
               The updater failed. Its final log output is preserved below.
             </Banner>
           ) : null}
-          {status.state === 'succeeded' && updateRequested ? (
-            <p className="mt-3 text-xs text-good">
-              Endpoints passed. Reconnecting and refreshing this page...
-            </p>
-          ) : null}
-          {status.log_tail.length ? (
-            <pre className="mt-3 max-h-80 overflow-auto rounded border border-edge bg-[#090c11] p-3 text-xs leading-relaxed text-muted">
-              {status.log_tail.join('\n')}
-            </pre>
-          ) : null}
+          <UpdateProgress status={status} showMessage />
         </div>
       ) : (
         <p className="mt-3 text-xs text-muted">
@@ -331,5 +329,43 @@ function UpdateCard({
         </p>
       )}
     </Card>
+  );
+}
+
+function UpdateProgress({
+  status,
+  showMessage = false,
+}: {
+  status: NonNullable<Awaited<ReturnType<typeof api.systemUpdateStatus>>>;
+  showMessage?: boolean;
+}) {
+  return (
+    <div className={showMessage ? '' : 'mt-3'}>
+      {showMessage ? (
+        <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+          <span className="font-medium text-ink">{status.message}</span>
+          <span className="tabular text-muted">{status.progress}%</span>
+        </div>
+      ) : null}
+      <div className="h-2 overflow-hidden rounded-full bg-edge/70">
+        <div
+          className={`h-full transition-[width] duration-500 ${status.state === 'failed' ? 'bg-bad' : 'bg-accent'}`}
+          style={{ width: `${Math.max(1, Math.min(100, status.progress))}%` }}
+        />
+      </div>
+      <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-muted">
+        <span>
+          Phase: {status.phase} · {status.progress}%
+        </span>
+        {status.started_at ? (
+          <span>Started: {new Date(status.started_at).toLocaleString()}</span>
+        ) : null}
+      </div>
+      {status.log_tail.length ? (
+        <pre className="mt-3 max-h-80 overflow-auto rounded border border-edge bg-[#090c11] p-3 text-xs leading-relaxed text-muted">
+          {status.log_tail.join('\n')}
+        </pre>
+      ) : null}
+    </div>
   );
 }

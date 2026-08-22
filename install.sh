@@ -460,19 +460,52 @@ EOF
 backup_data() {
     [[ -d "${DATA_DIR}" ]] || return 0
     step "Backing up configuration and data"
-    local stamp archive
+    local stamp archive staging data_rel config_rel
     stamp="$(date +%Y%m%d-%H%M%S)"
     archive="${BACKUP_DIR}/turret-${stamp}.tar.gz"
-    tar -czf "${archive}" \
-        -C / \
-        --exclude="${DATA_DIR#/}/snapshots" \
-        --exclude="${DATA_DIR#/}/models" \
-        "${DATA_DIR#/}" \
-        $([[ -f "${ENV_FILE}" ]] && echo "${ENV_FILE#/}") 2>/dev/null || true
-    chmod 0600 "${archive}" 2>/dev/null || true
+    staging="$(mktemp -d /tmp/turret-backup.XXXXXX)"
+    data_rel="${DATA_DIR#/}"
+    config_rel="${CONFIG_DIR#/}"
+
+    info "saving configuration and database metadata; camera evidence and models remain in place"
+    mkdir -p "${staging}/${data_rel}" "${staging}/${config_rel}"
+    tar -C / -cf - \
+        --exclude="${data_rel}/detections" \
+        --exclude="${data_rel}/models" \
+        --exclude="${data_rel}/snapshots" \
+        --exclude="${data_rel}/update" \
+        --exclude="${data_rel}/turret.db" \
+        --exclude="${data_rel}/turret.db-wal" \
+        --exclude="${data_rel}/turret.db-shm" \
+        "${data_rel}" | tar -C "${staging}" -xf -
+
+    if [[ -f "${DATA_DIR}/turret.db" ]]; then
+        python3 - "${DATA_DIR}/turret.db" "${staging}/${data_rel}/turret.db" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=30)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+PY
+    fi
+    if [[ -f "${ENV_FILE}" ]]; then
+        cp -a "${ENV_FILE}" "${staging}/${config_rel}/$(basename "${ENV_FILE}")"
+    fi
+
+    tar -C "${staging}" -czf "${archive}" .
+    rm -rf -- "${staging}"
+    # Older installer versions sometimes left archives world-readable even
+    # though they may contain the environment file and camera credentials.
+    chmod 0600 "${BACKUP_DIR}"/turret-*.tar.gz 2>/dev/null || true
     ok "backup written to ${archive}"
 
-    # Keep the five most recent backups; older ones are not worth the disk.
+    # Keep the five most recent metadata backups; bulky immutable camera data
+    # is deliberately not duplicated into these pre-update archives.
     ls -1t "${BACKUP_DIR}"/turret-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
 }
 
@@ -845,7 +878,7 @@ ${C_BOLD}turret-control manager${C_RESET}
   3) Restart service
   4) Repair / reinstall dependencies
   5) Show recent logs
-  6) Create a data/configuration backup now
+  6) Create a configuration/database backup now
   7) Uninstall application (keep data and backups)
   8) PURGE everything owned by turret-control
   9) Cancel
