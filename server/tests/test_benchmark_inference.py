@@ -104,3 +104,32 @@ def test_pipeline_throughput_does_not_count_extra_motion_rescan_calls() -> None:
     assert summary["model_calls_per_s"] == 7.5
     assert summary["pipeline_results_observed"] == 12
     assert summary["observed_inference_fps"] == 6.0
+
+
+def test_detector_off_is_a_baseline_not_a_pipeline_stall() -> None:
+    summary = summarize(
+        "off",
+        [
+            {
+                "actual_device": "off",
+                "elapsed_s": 0.0,
+                "inferences": 100,
+                "pipeline_ticks": 50,
+                "cpu_percent": 42.0,
+            },
+            {
+                "actual_device": "off",
+                "elapsed_s": 2.0,
+                "inferences": 100,
+                "pipeline_ticks": 50,
+                "cpu_percent": 40.0,
+            },
+        ],
+    )
+
+    assert summary["actual_device"] == "off"
+    assert summary["pipeline_results_observed"] == 0
+    assert summary["observed_inference_fps"] == 0.0
+    assert summary["no_progress_s"] == 0.0
+    assert summary["no_progress_intervals"] == 0
+    assert summary["cpu_percent_mean"] == 41.0

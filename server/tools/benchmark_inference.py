@@ -260,6 +260,19 @@ def wait_for_detector(client: ApiClient, requested: str, timeout_s: float) -> di
     )
 
 
+def wait_for_detector_disabled(client: ApiClient, timeout_s: float) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        health = client.request("GET", "/api/health")
+        vision, _ = _vision(health)
+        last = vision
+        if not vision.get("enabled"):
+            return health
+        time.sleep(1)
+    raise BenchmarkError(f"detector did not become disabled within {timeout_s:.0f}s; last={last}")
+
+
 def _number(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) else None
 
@@ -291,7 +304,7 @@ def collect_sample(
         "health": health.get("status"),
         "camera_ok": health.get("checks", {}).get("camera"),
         "ai_ok": health.get("checks", {}).get("ai"),
-        "actual_device": detector.get("device"),
+        "actual_device": "off" if mode == "off" else detector.get("device"),
         "detector_loaded": detector.get("loaded"),
         "inference_ms": _number(detector.get("last_inference_ms")),
         "inferences": detector.get("inferences"),
@@ -345,7 +358,7 @@ def summarize(mode: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
     stall_s = 0.0
     stall_intervals = 0
     progress_samples = samples[:1]
-    if len(samples) > 1:
+    if mode != "off" and len(samples) > 1:
         for previous, current in pairwise(samples):
             previous_count = previous.get(progress_key)
             current_count = current.get(progress_key)
@@ -490,12 +503,19 @@ def run_mode(
     reload_timeout_s: float,
 ) -> list[dict[str, Any]]:
     print(f"\nSwitching detector to {mode}...")
-    client.request(
-        "PATCH", "/api/settings/detector", {"enabled": True, "backend": "yolo", "device": mode}
-    )
-    ready = wait_for_detector(client, mode, reload_timeout_s)
-    _, detector = _vision(ready)
-    print(f"Detector ready on {detector.get('device')} using {detector.get('model')}.")
+    if mode == "off":
+        client.request("PATCH", "/api/settings/detector", {"enabled": False})
+        wait_for_detector_disabled(client, reload_timeout_s)
+        print("Detector disabled; measuring camera decoding and server baseline.")
+    else:
+        client.request(
+            "PATCH",
+            "/api/settings/detector",
+            {"enabled": True, "backend": "yolo", "device": mode},
+        )
+        ready = wait_for_detector(client, mode, reload_timeout_s)
+        _, detector = _vision(ready)
+        print(f"Detector ready on {detector.get('device')} using {detector.get('model')}.")
     print(f"Warming up for {warmup_s:.0f}s...")
     warmup_end = time.monotonic() + warmup_s
     while time.monotonic() < warmup_end:
@@ -521,7 +541,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=20, help="warm-up seconds per mode")
     parser.add_argument("--interval", type=float, default=2, help="sample interval in seconds")
     parser.add_argument(
-        "--modes", default="auto,cpu", help="comma-separated detector modes (auto,cpu)"
+        "--modes",
+        default="off,cpu,auto",
+        help="comma-separated detector modes (off,cpu,auto)",
     )
     parser.add_argument("--reload-timeout", type=float, default=90)
     parser.add_argument("--username")
@@ -538,8 +560,8 @@ def main() -> int:
     if args.duration <= 0 or args.warmup < 0 or args.interval <= 0:
         raise BenchmarkError("duration/interval must be positive and warmup cannot be negative")
     modes = [mode.strip() for mode in args.modes.split(",") if mode.strip()]
-    if not modes or any(mode not in {"auto", "cpu"} for mode in modes):
-        raise BenchmarkError("modes must contain only auto and cpu")
+    if not modes or any(mode not in {"off", "auto", "cpu"} for mode in modes):
+        raise BenchmarkError("modes must contain only off, auto and cpu")
 
     client = ApiClient(args.url)
     client.authenticate(args.username, args.password)

@@ -120,12 +120,14 @@ After installation, compare CPU and GPU inference under the same live-camera
 workload with the standard-library benchmark. It disarms the system, switches
 the detector through the normal settings API, waits for each model reload,
 prints live inference/container/GPU measurements, restores the original
-detector settings and writes CSV plus JSON results:
+detector settings and writes CSV plus JSON results. Its default three phases
+are detector off (camera/server baseline), CPU inference and automatic device
+selection (CUDA when available):
 
 ```bash
 /opt/turret-control/venv/bin/python \
   /opt/turret-control/server/tools/benchmark_inference.py \
-  --duration 120 --warmup 20
+  --modes off,cpu,auto --duration 120 --warmup 20
 ```
 
 GPU power is read from `nvidia-smi`. CPU package power is included only when
