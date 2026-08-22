@@ -370,7 +370,10 @@ export interface Settings {
     capture_enabled: boolean;
     capture_rearm_s: number;
     capture_repeat_s: number;
+    capture_static_repeat_s: number;
     capture_repeat_iou: number;
+    capture_static_repeat_iou: number;
+    capture_static_visual_tolerance: number;
     capture_jpeg_quality: number;
     confidence: number;
     iou: number;

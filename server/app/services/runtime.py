@@ -16,6 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
+
 from app.camera.credentials import CameraCredentialStore
 from app.camera.manager import CameraManager
 from app.camera.rtsp import encode_jpeg, safe_filename
@@ -49,6 +52,26 @@ from app.vision.overlays import render_overlay
 from app.vision.pipeline import VisionPipeline, VisionResult, _detection_iou
 
 log = get_logger(__name__)
+
+
+def _evidence_crop_signature(image: np.ndarray, detection: Any) -> np.ndarray | None:
+    """Return a compact appearance sample for one detected image region."""
+    if image.ndim < 2 or image.size == 0:
+        return None
+    height, width = image.shape[:2]
+    x1 = max(0, min(width, int(detection.x1)))
+    y1 = max(0, min(height, int(detection.y1)))
+    x2 = max(0, min(width, int(detection.x2 + 0.999)))
+    y2 = max(0, min(height, int(detection.y2 + 0.999)))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = image[y1:y2, x1:x2]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    return cv2.resize(gray, (16, 16), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+
+
+def _signature_distance(left: np.ndarray, right: np.ndarray) -> float:
+    return float(np.mean(np.abs(left - right)))
 
 
 class Runtime:
@@ -92,8 +115,10 @@ class Runtime:
         self._tasks: list[asyncio.Task[Any]] = []
         self._last_selection: SelectionResult | None = None
         self._detection_last_seen: dict[tuple[str, str], float] = {}
-        self._low_evidence_history: dict[tuple[str, str, str, str], tuple[float, list[Any]]] = {}
-        self._low_evidence_suppressed: dict[tuple[str, str, str, str], int] = {}
+        self._evidence_history: dict[
+            tuple[str, str, str, str], list[tuple[float, Any, np.ndarray]]
+        ] = {}
+        self._evidence_suppressed: dict[tuple[str, str, str, str], int] = {}
         self._stopping = False
 
     # ------------------------------------------------------------------
@@ -208,10 +233,11 @@ class Runtime:
         capture: dict[str, object] | None = None
         if detector.capture_enabled and result.image is not None:
             primary = max(due, key=lambda item: max(item[2]))
-            if not self._suppress_repetitive_low_evidence(
+            if not self._suppress_repetitive_evidence(
                 result,
                 class_key=primary[0],
                 detections=result.proposals,
+                image=result.image,
                 trigger="detection",
             ):
                 try:
@@ -256,10 +282,11 @@ class Runtime:
             return
         detector = self.settings.detector
         motion = self.settings.scene_motion
-        if self._suppress_repetitive_low_evidence(
+        if self._suppress_repetitive_evidence(
             result,
             class_key=evidence.class_name.casefold(),
             detections=evidence.detections,
+            image=evidence.image,
             trigger="motion-rescan",
         ):
             return
@@ -302,49 +329,69 @@ class Runtime:
             },
         )
 
-    def _suppress_repetitive_low_evidence(
+    def _suppress_repetitive_evidence(
         self,
         result: VisionResult,
         *,
         class_key: str,
         detections: list[Any],
+        image: np.ndarray,
         trigger: str,
     ) -> bool:
-        """Limit only duplicate review frames below operational confidence.
+        """Limit duplicate review frames without changing live detections.
 
-        Inference results are never removed and operational detections are
-        never delayed. A weak stationary bird is saved immediately and then
-        periodically while the same low-confidence box persists.
+        The first box at a location is saved immediately. Recently captured
+        locations are remembered collectively, so alternating static false
+        positives cannot evade suppression. A moved/new box is still captured,
+        and a stationary bird remains available to tracking and targeting on
+        every frame even while duplicate evidence images are skipped.
         """
         detector = self.settings.detector
         relevant = [
             item for item in detections if item.class_name.casefold() == class_key.casefold()
         ]
-        if not relevant or any(item.confidence >= detector.confidence for item in relevant):
+        if not relevant:
             return False
         key = (result.camera_id, detector.model_path, trigger, class_key.casefold())
-        previous = self._low_evidence_history.get(key)
-        repetitive = bool(
-            previous
-            and result.frame_ts - previous[0] < detector.capture_repeat_s
-            and all(
-                any(
-                    _detection_iou(current, old) >= detector.capture_repeat_iou
-                    for old in previous[1]
-                )
-                for current in relevant
+        repeat_s = max(detector.capture_repeat_s, detector.capture_static_repeat_s)
+        repeat_iou = min(detector.capture_repeat_iou, detector.capture_static_repeat_iou)
+        history = [
+            entry
+            for entry in self._evidence_history.get(key, [])
+            if result.frame_ts - entry[0] < repeat_s
+        ]
+        current_evidence = [
+            (current, _evidence_crop_signature(image, current)) for current in relevant
+        ]
+        novel = [
+            (current, signature)
+            for current, signature in current_evidence
+            if signature is None
+            or not any(
+                _detection_iou(current, old) >= repeat_iou
+                and _signature_distance(signature, old_signature)
+                <= detector.capture_static_visual_tolerance
+                for _captured_at, old, old_signature in history
             )
-        )
-        if repetitive:
-            self._low_evidence_suppressed[key] = self._low_evidence_suppressed.get(key, 0) + 1
+        ]
+        if history and not novel:
+            self._evidence_history[key] = history
+            self._evidence_suppressed[key] = self._evidence_suppressed.get(key, 0) + 1
             return True
-        self._low_evidence_history[key] = (result.frame_ts, list(relevant))
+        history.extend(
+            (result.frame_ts, current, signature)
+            for current, signature in novel
+            if signature is not None
+        )
+        # A moving object can visit many locations during the retention window.
+        # Keep memory bounded without losing the most recent static hotspots.
+        self._evidence_history[key] = history[-512:]
         return False
 
     def _take_suppressed_evidence_count(
         self, camera_id: str, model_path: str, trigger: str, class_key: str
     ) -> int:
-        return self._low_evidence_suppressed.pop(
+        return self._evidence_suppressed.pop(
             (camera_id, model_path, trigger, class_key.casefold()), 0
         )
 

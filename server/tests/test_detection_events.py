@@ -31,11 +31,11 @@ def result_at(
     )
 
 
-def detection(class_name: str, confidence: float) -> Detection:
+def detection(class_name: str, confidence: float, *, x1: float = 100) -> Detection:
     return Detection(
-        x1=100,
+        x1=x1,
         y1=100,
-        x2=200,
+        x2=x1 + 100,
         y2=250,
         confidence=confidence,
         class_id=0,
@@ -49,8 +49,8 @@ def runtime_for_test() -> Runtime:
     runtime.detection_captures = AsyncMock()
     runtime.settings_store = SimpleNamespace(current=AppSettings())
     runtime._detection_last_seen = {}
-    runtime._low_evidence_history = {}
-    runtime._low_evidence_suppressed = {}
+    runtime._evidence_history = {}
+    runtime._evidence_suppressed = {}
     return runtime
 
 
@@ -114,7 +114,7 @@ async def test_repetitive_weak_evidence_is_suppressed_without_removing_detection
     runtime = runtime_for_test()
     runtime.detection_captures.create.return_value = {"id": 42}
     first = result_at(10.0, detection("bird", 0.2))
-    first.image = np.zeros((100, 160, 3), dtype=np.uint8)
+    first.image = np.zeros((300, 320, 3), dtype=np.uint8)
     repeated = result_at(20.0, detection("bird", 0.2))
     repeated.image = first.image
 
@@ -125,15 +125,74 @@ async def test_repetitive_weak_evidence_is_suppressed_without_removing_detection
     assert repeated.detections, "operational pipeline data must remain untouched"
 
 
-async def test_operational_confidence_evidence_is_never_repeat_suppressed() -> None:
+async def test_operational_evidence_repeat_is_suppressed_without_removing_detection() -> None:
     runtime = runtime_for_test()
     runtime.detection_captures.create.return_value = {"id": 42}
     first = result_at(10.0, detection("bird", 0.8))
-    first.image = np.zeros((100, 160, 3), dtype=np.uint8)
+    first.image = np.zeros((300, 320, 3), dtype=np.uint8)
     repeated = result_at(20.0, detection("bird", 0.8))
     repeated.image = first.image
 
     await runtime._on_vision_result(first)
     await runtime._on_vision_result(repeated)
+
+    runtime.detection_captures.create.assert_awaited_once()
+    assert repeated.detections, "operational pipeline data must remain untouched"
+
+
+async def test_alternating_static_hotspots_are_remembered_together() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    results = [
+        result_at(10.0, detection("bird", 0.8, x1=100)),
+        result_at(20.0, detection("bird", 0.8, x1=500)),
+        result_at(30.0, detection("bird", 0.8, x1=100)),
+    ]
+    for result in results:
+        result.image = np.zeros((300, 800, 3), dtype=np.uint8)
+        await runtime._on_vision_result(result)
+
+    assert runtime.detection_captures.create.await_count == 2
+
+
+async def test_jittering_box_still_counts_as_same_static_hotspot() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    first = result_at(10.0, detection("bird", 0.8, x1=100))
+    jittered = result_at(20.0, detection("bird", 0.8, x1=120))
+    first.image = np.zeros((300, 300, 3), dtype=np.uint8)
+    jittered.image = first.image
+
+    await runtime._on_vision_result(first)
+    await runtime._on_vision_result(jittered)
+
+    runtime.detection_captures.create.assert_awaited_once()
+
+
+async def test_changed_appearance_at_same_location_is_captured() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    first = result_at(10.0, detection("bird", 0.8))
+    changed = result_at(20.0, detection("bird", 0.8))
+    first.image = np.zeros((300, 320, 3), dtype=np.uint8)
+    changed.image = first.image.copy()
+    changed.image[100:250, 100:200] = 255
+
+    await runtime._on_vision_result(first)
+    await runtime._on_vision_result(changed)
+
+    assert runtime.detection_captures.create.await_count == 2
+
+
+async def test_static_location_becomes_capturable_after_repeat_interval() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    first = result_at(10.0, detection("bird", 0.8))
+    repeated_later = result_at(3_611.0, detection("bird", 0.8))
+    first.image = np.zeros((300, 320, 3), dtype=np.uint8)
+    repeated_later.image = first.image
+
+    await runtime._on_vision_result(first)
+    await runtime._on_vision_result(repeated_later)
 
     assert runtime.detection_captures.create.await_count == 2

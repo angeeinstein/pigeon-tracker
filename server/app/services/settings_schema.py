@@ -95,7 +95,15 @@ class DetectorSettings(BaseModel):
     #: Repetitive evidence below the operational threshold may be saved less
     #: often. This never changes detector output, tracking or targeting.
     capture_repeat_s: float = Field(default=60.0, ge=5.0, le=3600.0)
+    #: Minimum interval before a box at the same image location is saved again,
+    #: regardless of confidence. New locations remain immediately capturable.
+    #: This affects review evidence only, never detection or targeting.
+    capture_static_repeat_s: float = Field(default=3600.0, ge=60.0, le=86400.0)
     capture_repeat_iou: float = Field(default=0.70, ge=0.1, le=0.99)
+    capture_static_repeat_iou: float = Field(default=0.45, ge=0.1, le=0.99)
+    #: Maximum mean grayscale difference for two overlapping crops to count as
+    #: the same visual evidence. Lower values are more conservative.
+    capture_static_visual_tolerance: float = Field(default=0.08, ge=0.01, le=0.5)
     capture_jpeg_quality: int = Field(default=90, ge=40, le=100)
     confidence: float = Field(default=0.35, ge=0.01, le=0.99)
     iou: float = Field(default=0.45, ge=0.05, le=0.95)

@@ -84,8 +84,9 @@ const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
     'Save detection evidence': 'capture_enabled',
     'Capture threshold': 'capture_confidence',
     'Capture re-arm': 'capture_rearm_s',
-    'Weak evidence repeat': 'capture_repeat_s',
-    'Weak evidence overlap': 'capture_repeat_iou',
+    'Same-place capture interval': 'capture_static_repeat_s',
+    'Repeat overlap': 'capture_static_repeat_iou',
+    'Repeat visual tolerance': 'capture_static_visual_tolerance',
     'Capture JPEG quality': 'capture_jpeg_quality',
     'Confidence threshold': 'confidence',
     'NMS IoU': 'iou',
@@ -1144,21 +1145,31 @@ function Fields({
             hint="A continuously visible class creates one image, not one image per frame."
           />
           <NumberField
-            label="Weak evidence repeat"
+            label="Same-place capture interval"
             suffix="s"
-            value={value.capture_repeat_s}
-            min={5}
-            onChange={(v) => update({ capture_repeat_s: v })}
-            hint="Only delays another review image for nearly identical boxes below the operational threshold. Detection and tracking continue continuously."
+            value={value.capture_static_repeat_s}
+            min={60}
+            max={86400}
+            onChange={(v) => update({ capture_static_repeat_s: v })}
+            hint="Save the same box location at most this often. New locations are saved immediately; detection, tracking and targeting continue on every frame."
           />
           <NumberField
-            label="Weak evidence overlap"
-            value={value.capture_repeat_iou}
+            label="Repeat overlap"
+            value={value.capture_static_repeat_iou}
             step={0.05}
             min={0.1}
             max={0.99}
-            onChange={(v) => update({ capture_repeat_iou: v })}
-            hint="How closely weak boxes must overlap before they count as repetitive evidence."
+            onChange={(v) => update({ capture_static_repeat_iou: v })}
+            hint="How closely boxes must overlap before they count as the same review evidence."
+          />
+          <NumberField
+            label="Repeat visual tolerance"
+            value={value.capture_static_visual_tolerance}
+            step={0.01}
+            min={0.01}
+            max={0.5}
+            onChange={(v) => update({ capture_static_visual_tolerance: v })}
+            hint="Overlapping boxes are suppressed only when their image crops also look this similar. Lower values preserve more same-location pigeon images."
           />
           <NumberField
             label="Capture JPEG quality"
