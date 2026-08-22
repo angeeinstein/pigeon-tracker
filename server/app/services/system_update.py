@@ -77,6 +77,21 @@ class SystemUpdateManager:
             "check_error": None,
             "check_interval_s": self.check_interval_s,
         }
+        self._maintenance: dict[str, Any] = {
+            "required": False,
+            "reason": None,
+            "message": None,
+        }
+
+    def set_maintenance_requirement(
+        self, *, required: bool, reason: str | None = None, message: str | None = None
+    ) -> None:
+        """Expose dependency work that the privileged updater can perform."""
+        self._maintenance = {
+            "required": required,
+            "reason": reason if required else None,
+            "message": message if required else None,
+        }
 
     @property
     def updater_available(self) -> bool:
@@ -245,6 +260,7 @@ class SystemUpdateManager:
                 "systemd request path" if self.updater_available else "unavailable"
             ),
             "version_check": dict(self._version),
+            "maintenance": dict(self._maintenance),
         }
 
     def overview(self) -> dict[str, Any]:
@@ -254,6 +270,7 @@ class SystemUpdateManager:
             "state": operation["state"],
             "updater_available": self.updater_available,
             "version_check": dict(self._version),
+            "maintenance": dict(self._maintenance),
         }
 
     def _log_tail(self, max_lines: int = 160, max_bytes: int = 256 * 1024) -> list[str]:
@@ -279,7 +296,7 @@ class SystemUpdateManager:
         current = self.operation_status(include_log=False)
         if current["state"] in RUNNING_STATES:
             raise RuntimeError("an update is already running")
-        if self._version.get("update_available") is False:
+        if self._version.get("update_available") is False and not self._maintenance.get("required"):
             raise RuntimeError("the installed server is already up to date")
         if not self.updater_available:
             raise RuntimeError(

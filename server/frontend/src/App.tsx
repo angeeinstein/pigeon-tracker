@@ -114,11 +114,13 @@ function TopBar() {
             >
               <span className="inline-flex items-center gap-1.5">
                 {item.label}
-                {item.to === '/system' && update.data?.version_check.update_available ? (
+                {item.to === '/system' &&
+                (update.data?.version_check.update_available ||
+                  update.data?.maintenance.required) ? (
                   <span
                     className="h-2 w-2 rounded-full bg-warn shadow-[0_0_0_3px_rgba(247,185,85,0.12)]"
-                    title="Server update available"
-                    aria-label="Server update available"
+                    title="Server update or maintenance available"
+                    aria-label="Server update or maintenance available"
                   />
                 ) : null}
               </span>

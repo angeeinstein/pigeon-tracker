@@ -220,6 +220,9 @@ function UpdateCard({
   onStart: () => void;
 }) {
   const version = status?.version_check;
+  const maintenance = status?.maintenance;
+  const actionAvailable =
+    version?.update_available === true || maintenance?.required === true;
   const running = ['starting', 'checking', 'updating', 'restarting', 'verifying'].includes(
     status?.state ?? '',
   );
@@ -246,11 +249,17 @@ function UpdateCard({
               running ||
               busy !== null ||
               !status?.updater_available ||
-              version?.update_available !== true
+              !actionAvailable
             }
             onClick={onStart}
           >
-            {busy === 'start' ? 'Starting...' : running ? 'Updating...' : 'Update server'}
+            {busy === 'start'
+              ? 'Starting...'
+              : running
+                ? 'Updating...'
+                : maintenance?.required && version?.update_available !== true
+                  ? 'Install GPU support'
+                  : 'Update server'}
           </button>
         </div>
       }
@@ -264,6 +273,7 @@ function UpdateCard({
         ) : (
           <Pill tone="idle">version unknown</Pill>
         )}
+        {maintenance?.required ? <Pill tone="warn">GPU setup available</Pill> : null}
         <Pill tone={status?.updater_available ? 'good' : 'bad'}>
           web updater {status?.updater_available ? 'ready' : 'not installed'}
         </Pill>
@@ -283,6 +293,9 @@ function UpdateCard({
       </div>
 
       {version?.check_error ? <Banner tone="warn">{version.check_error}</Banner> : null}
+      {maintenance?.required && maintenance.message ? (
+        <Banner tone="warn">{maintenance.message}</Banner>
+      ) : null}
       {status && !status.updater_available ? (
         <Banner tone="warn">
           Run the shell updater once to install the restricted update service and request path.

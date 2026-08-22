@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -36,6 +37,16 @@ def cuda_available() -> bool:
 
         return bool(torch.cuda.is_available())
     except Exception:
+        return False
+
+
+def nvidia_device_exposed(device_dir: Path = Path("/dev")) -> bool:
+    """Return whether a container has the NVIDIA control and GPU device nodes."""
+    try:
+        if not (device_dir / "nvidiactl").exists():
+            return False
+        return any(re.fullmatch(r"nvidia\d+", path.name) for path in device_dir.iterdir())
+    except OSError:
         return False
 
 

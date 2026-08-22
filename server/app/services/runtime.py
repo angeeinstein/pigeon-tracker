@@ -50,6 +50,7 @@ from app.turret.simulator import SimulatedController
 from app.version import version_info
 from app.vision.overlays import render_overlay
 from app.vision.pipeline import VisionPipeline, VisionResult, _detection_iou
+from app.vision.yolo_detector import cuda_available, nvidia_device_exposed
 
 log = get_logger(__name__)
 
@@ -127,6 +128,7 @@ class Runtime:
     async def start(self) -> None:
         settings = await self.settings_store.load()
         self.settings_store.subscribe(self._on_settings_changed)
+        self._sync_gpu_update_requirement(settings)
 
         await self.calibration.refresh()
         await self.zones.refresh()
@@ -180,6 +182,8 @@ class Runtime:
     # settings
     # ------------------------------------------------------------------
     async def _on_settings_changed(self, settings: AppSettings, changed: set[str]) -> None:
+        if "detector" in changed:
+            self._sync_gpu_update_requirement(settings)
         if "cameras" in changed:
             self.camera_credentials.retain({camera.id for camera in settings.cameras.sources})
             await self.cameras.apply(settings.cameras)
@@ -197,6 +201,21 @@ class Runtime:
             self.turret.update_settings(settings.controller, settings.motion)
         if "controller" in changed:
             await self._sync_controller_mode()
+
+    def _sync_gpu_update_requirement(self, settings: AppSettings) -> None:
+        requested = settings.detector.device in {"auto", "cuda"}
+        required = requested and nvidia_device_exposed() and not cuda_available()
+        self.system_update.set_maintenance_requirement(
+            required=required,
+            reason="gpu-dependencies" if required else None,
+            message=(
+                "GPU inference is selected and an NVIDIA device is exposed, but the matching "
+                "driver userspace or CUDA-enabled PyTorch is not installed. Run the server "
+                "update to prepare GPU support; CPU inference remains available meanwhile."
+                if required
+                else None
+            ),
+        )
 
     async def _on_vision_result(self, result: VisionResult) -> None:
         """Persist class-presence events from the detector output.

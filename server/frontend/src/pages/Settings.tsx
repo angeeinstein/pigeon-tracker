@@ -1102,11 +1102,18 @@ function Fields({
             label="Device"
             value={value.device}
             options={[
-              { value: 'auto', label: 'auto (CUDA if available)' },
-              { value: 'cpu', label: 'CPU' },
-              { value: 'cuda', label: 'CUDA' },
+              { value: 'cpu', label: 'CPU only (ignore GPU)' },
+              { value: 'auto', label: 'Automatic (CUDA when available)' },
+              { value: 'cuda', label: 'CUDA preferred (warn if unavailable)' },
             ]}
             onChange={(v) => update({ device: v })}
+            hint={
+              value.device === 'cpu'
+                ? 'Detection stays entirely on the CPU. A mapped GPU is not initialized and produces no availability warnings.'
+                : value.device === 'auto'
+                  ? 'Uses CUDA when it works and otherwise switches quietly to CPU. With an exposed GPU, missing dependencies appear as a System maintenance update.'
+                  : 'Attempts CUDA first. With an exposed GPU, missing dependencies appear as a System maintenance update while detection continues on CPU.'
+            }
           />
           <NumberField
             label="Confidence threshold"

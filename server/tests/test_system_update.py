@@ -69,6 +69,43 @@ async def test_start_writes_only_systemd_request_marker_and_persists_status(
 
 
 @pytest.mark.asyncio
+async def test_maintenance_can_run_when_code_is_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    updater = manager(tmp_path)
+    monkeypatch.setattr(SystemUpdateManager, "updater_available", property(lambda _self: True))
+    updater._version.update(update_available=False, current_commit="aaaa", latest_commit="aaaa")
+    updater.set_maintenance_requirement(
+        required=True,
+        reason="gpu-dependencies",
+        message="Install CUDA dependencies.",
+    )
+
+    result = await updater.start_update()
+
+    assert result["state"] == "starting"
+    assert result["maintenance"]["required"] is True
+    assert updater.request_file.is_file()
+
+
+def test_status_exposes_and_clears_maintenance_requirement(tmp_path: Path) -> None:
+    updater = manager(tmp_path)
+    updater.set_maintenance_requirement(
+        required=True,
+        reason="gpu-dependencies",
+        message="Install CUDA dependencies.",
+    )
+    assert updater.overview()["maintenance"]["reason"] == "gpu-dependencies"
+
+    updater.set_maintenance_requirement(required=False)
+    assert updater.status()["maintenance"] == {
+        "required": False,
+        "reason": None,
+        "message": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_permission_failure_is_visible_in_persisted_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

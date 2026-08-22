@@ -24,6 +24,8 @@
 #   --repo <url>         source repository
 #   --port <n>           HTTP port (default: 8080)
 #   --no-ai              skip the AI stack (torch/ultralytics) - much smaller
+#   --gpu                prepare NVIDIA/CUDA support (if a GPU is exposed)
+#   --cpu-only           prepare CPU inference only
 #   --no-frontend        skip building the web UI
 #   --with-gstreamer     use the system OpenCV so GStreamer capture is available
 
@@ -60,12 +62,18 @@ INSTALL_AI=1
 BUILD_FRONTEND=1
 USE_SYSTEM_GSTREAMER=0
 PURGE=0
+AI_DEVICE_OVERRIDE="${TURRET_AI_DEVICE:-}"
 UPDATE_AVAILABLE=-1
 CURRENT_COMMIT="unknown"
 REMOTE_COMMIT="unknown"
 
 MIN_NODE_MAJOR=18
 NODESOURCE_VERSION=20
+PYTORCH_CPU_INDEX_URL="https://download.pytorch.org/whl/cpu"
+# PyTorch's CUDA 13 builds no longer contain kernels for Maxwell, Pascal or
+# Volta. CUDA 12.6 is the maintained legacy wheel line for those devices.
+PYTORCH_LEGACY_CUDA_INDEX_URL="https://download.pytorch.org/whl/cu126"
+NVIDIA_DRIVER_BASE_URL="https://download.nvidia.com/XFree86/Linux-x86_64"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -130,6 +138,8 @@ parse_args() {
             --repo)           REPO_URL="${2:?--repo needs a value}"; shift ;;
             --port)           HTTP_PORT="${2:?--port needs a value}"; shift ;;
             --no-ai)          INSTALL_AI=0 ;;
+            --gpu)            AI_DEVICE_OVERRIDE="auto" ;;
+            --cpu-only)       AI_DEVICE_OVERRIDE="cpu" ;;
             --no-frontend)    BUILD_FRONTEND=0 ;;
             --with-gstreamer) USE_SYSTEM_GSTREAMER=1 ;;
             -h|--help)        sed -n '3,30p' "$0"; exit 0 ;;
@@ -350,8 +360,238 @@ remove_launcher() {
 # --------------------------------------------------------------------------
 # python environment
 # --------------------------------------------------------------------------
-has_nvidia_gpu() {
+nvidia_device_exposed() {
+    [[ -c /dev/nvidiactl ]] && compgen -G '/dev/nvidia[0-9]*' >/dev/null
+}
+
+configured_ai_device() {
+    local configured="${AI_DEVICE_OVERRIDE}"
+    if [[ -z "${configured}" && -f "${DATA_DIR}/turret.db" ]] && command -v python3 >/dev/null; then
+        configured="$(python3 - "${DATA_DIR}/turret.db" <<'PY' 2>/dev/null || true
+import json
+import sqlite3
+import sys
+
+try:
+    connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
+    row = connection.execute(
+        "SELECT data FROM settings WHERE section = ?", ("detector",)
+    ).fetchone()
+    connection.close()
+    if row:
+        value = json.loads(row[0]).get("device", "")
+        if value in {"auto", "cpu", "cuda"}:
+            print(value)
+except (OSError, sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+    pass
+PY
+)"
+    fi
+    case "${configured}" in
+        auto|cuda|cpu) printf '%s\n' "${configured}" ;;
+        *) printf 'cpu\n' ;;
+    esac
+}
+
+choose_initial_ai_device() {
+    [[ -n "${AI_DEVICE_OVERRIDE}" ]] && return
+    if ! nvidia_device_exposed; then
+        AI_DEVICE_OVERRIDE="cpu"
+        info "no NVIDIA device is exposed; preparing CPU inference"
+        return
+    fi
+    if [[ ${ASSUME_YES} -eq 1 || ! -r /dev/tty || ! -w /dev/tty ]]; then
+        AI_DEVICE_OVERRIDE="cpu"
+        info "NVIDIA device detected; unattended installation defaults to CPU inference"
+        info "run turret-update --gpu later, or select GPU in Settings > AI"
+        return
+    fi
+
+    local answer
+    printf '\nAn NVIDIA GPU is exposed to this server.\n' >/dev/tty
+    printf 'Install optional CUDA inference support? This downloads several gigabytes. [y/N] ' \
+        >/dev/tty
+    read -r answer </dev/tty || true
+    if [[ "${answer}" =~ ^[Yy] ]]; then
+        AI_DEVICE_OVERRIDE="auto"
+        info "GPU support selected; the web setting can still force CPU inference"
+    else
+        AI_DEVICE_OVERRIDE="cpu"
+        info "CPU inference selected; GPU support can be added later from the web updater"
+    fi
+}
+
+nvidia_kernel_driver_version() {
+    local version="${TURRET_NVIDIA_DRIVER_VERSION:-}"
+    if [[ -z "${version}" && -r /sys/module/nvidia/version ]]; then
+        version="$(tr -d '[:space:]' < /sys/module/nvidia/version)"
+    fi
+    if [[ -z "${version}" && -r /proc/driver/nvidia/version ]]; then
+        version="$(sed -nE 's/.*Kernel Module[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' \
+            /proc/driver/nvidia/version | head -n 1)"
+    fi
+    if [[ -z "${version}" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+        version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null \
+            | head -n 1 | tr -d '[:space:]')"
+    fi
+    [[ "${version}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || return 1
+    printf '%s\n' "${version}"
+}
+
+nvidia_userspace_ready() {
     command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1
+}
+
+ensure_nvidia_userspace() {
+    nvidia_device_exposed || return 1
+    if nvidia_userspace_ready; then
+        ok "NVIDIA userspace $(nvidia-smi --query-gpu=driver_version --format=csv,noheader \
+            | head -n 1 | tr -d '[:space:]') is ready"
+        return 0
+    fi
+
+    local version staging installer url
+    if ! version="$(nvidia_kernel_driver_version)"; then
+        warn "an NVIDIA device is exposed but its host driver version could not be read"
+        warn "set TURRET_NVIDIA_DRIVER_VERSION explicitly to retry; continuing with CPU inference"
+        return 1
+    fi
+    staging="$(mktemp -d /tmp/turret-nvidia.XXXXXX)"
+    installer="${staging}/NVIDIA-Linux-x86_64-${version}.run"
+    url="${NVIDIA_DRIVER_BASE_URL}/${version}/NVIDIA-Linux-x86_64-${version}.run"
+
+    info "NVIDIA device nodes detected without matching userspace ${version}; installing it"
+    if ! (
+        set -e
+        curl -fL --retry 3 --connect-timeout 20 "${url}" -o "${installer}"
+        sh "${installer}" --check
+        # LXC shares the Proxmox host's kernel module. Installing another
+        # module in the container is both unnecessary and impossible.
+        sh "${installer}" --silent --no-kernel-module
+    ); then
+        rm -rf -- "${staging}"
+        warn "NVIDIA userspace ${version} could not be installed from ${url}"
+        warn "continuing with CPU inference; run turret-update --repair to retry later"
+        return 1
+    fi
+    rm -rf -- "${staging}"
+    hash -r
+    if ! nvidia_userspace_ready; then
+        warn "NVIDIA userspace was installed but cannot communicate with the exposed device"
+        warn "check that host and container driver versions match; continuing with CPU inference"
+        return 1
+    fi
+    ok "NVIDIA userspace ${version} installed"
+}
+
+nvidia_requires_legacy_cuda() {
+    local capability major minor found=0
+    while IFS= read -r capability; do
+        capability="$(echo "${capability}" | tr -d '[:space:]')"
+        [[ "${capability}" =~ ^([0-9]+)\.([0-9]+)$ ]] || continue
+        found=1
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+        # PyTorch's CUDA 13 wheels require Turing (7.5) or newer.
+        if (( major < 7 || (major == 7 && minor < 5) )); then
+            return 0
+        fi
+    done < <(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null)
+    (( found == 1 )) || return 2
+    return 1
+}
+
+pytorch_cuda_ready() {
+    "${VENV_DIR}/bin/python" - <<'PY' >/dev/null 2>&1
+import sys
+
+try:
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA unavailable")
+    major, minor = torch.cuda.get_device_capability(0)
+    if f"sm_{major}{minor}" not in torch.cuda.get_arch_list():
+        raise RuntimeError("the PyTorch wheel has no kernel for this GPU")
+except Exception:
+    sys.exit(1)
+PY
+}
+
+pytorch_cpu_ready() {
+    "${VENV_DIR}/bin/python" - <<'PY' >/dev/null 2>&1
+try:
+    import torch
+
+    value = (torch.ones(1, device="cpu") + 1).item()
+    assert value == 2
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+try_install_cuda_pytorch() {
+    local capability_status
+    if pytorch_cuda_ready; then
+        ok "CUDA-enabled PyTorch already supports $(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)"
+        return 0
+    fi
+
+    if nvidia_requires_legacy_cuda; then
+        info "legacy NVIDIA architecture detected - installing CUDA 12.6 PyTorch"
+        "${VENV_DIR}/bin/pip" install --quiet --no-cache-dir --upgrade --force-reinstall \
+            torch torchvision --index-url "${PYTORCH_LEGACY_CUDA_INDEX_URL}" || return 1
+    else
+        capability_status=$?
+        if (( capability_status != 1 )); then
+            warn "the exposed GPU compute capability could not be read with nvidia-smi"
+            return 1
+        fi
+        info "NVIDIA GPU detected - installing the current CUDA PyTorch build"
+        "${VENV_DIR}/bin/pip" install --quiet --no-cache-dir --upgrade --force-reinstall \
+            torch torchvision || return 1
+    fi
+    pytorch_cuda_ready
+}
+
+ensure_cpu_pytorch() {
+    if pytorch_cpu_ready; then
+        ok "PyTorch CPU inference is available"
+        return 0
+    fi
+    info "installing CPU-only PyTorch"
+    "${VENV_DIR}/bin/pip" install --quiet --no-cache-dir --upgrade --force-reinstall \
+        torch torchvision --index-url "${PYTORCH_CPU_INDEX_URL}"
+    pytorch_cpu_ready || die "PyTorch could not run on either CUDA or CPU"
+}
+
+install_ai_stack() {
+    local cuda_ready=0 requested
+    requested="$(configured_ai_device)"
+    if [[ "${requested}" == "cpu" ]]; then
+        info "saved detector device is CPU; skipping optional NVIDIA setup"
+        ensure_cpu_pytorch
+    elif nvidia_device_exposed; then
+        info "saved detector device is ${requested}; preparing NVIDIA inference"
+        if ensure_nvidia_userspace; then
+            if try_install_cuda_pytorch; then
+                cuda_ready=1
+            else
+                warn "CUDA PyTorch could not run on the exposed GPU"
+                warn "continuing with CPU inference; run turret-update --repair to retry later"
+            fi
+        else
+            warn "the exposed NVIDIA device is unavailable to applications"
+        fi
+    else
+        info "GPU inference is selected, but no NVIDIA device is exposed; using CPU"
+    fi
+    if [[ "${requested}" != "cpu" ]]; then
+        (( cuda_ready == 1 )) || ensure_cpu_pytorch
+    fi
+
+    "${VENV_DIR}/bin/pip" install --quiet --no-cache-dir \
+        -r "${SERVER_DIR}/requirements/ai.txt"
 }
 
 setup_venv() {
@@ -377,19 +617,25 @@ setup_venv() {
     fi
 
     if [[ ${INSTALL_AI} -eq 1 ]]; then
-        if has_nvidia_gpu; then
-            info "NVIDIA GPU detected - installing the CUDA build of the AI stack"
-            "${VENV_DIR}/bin/pip" install --quiet -r "${SERVER_DIR}/requirements/ai.txt"
-        else
-            info "no GPU detected - installing the CPU-only AI stack (this takes a while)"
-            "${VENV_DIR}/bin/pip" install --quiet \
-                --extra-index-url https://download.pytorch.org/whl/cpu \
-                -r "${SERVER_DIR}/requirements/ai.txt"
-        fi
+        install_ai_stack
         ok "AI stack installed"
     else
         warn "skipping the AI stack (--no-ai): detection falls back to the mock detector"
     fi
+}
+
+apply_initial_ai_device() {
+    [[ ${INSTALL_AI} -eq 1 ]] || return 0
+    local requested
+    requested="$(configured_ai_device)"
+    [[ "${requested}" != "cpu" ]] || return 0
+    info "saving ${requested} as the initial detector device"
+    curl -fsS --max-time 15 \
+        -X PATCH \
+        -H 'Content-Type: application/json' \
+        --data "{\"device\":\"${requested}\"}" \
+        "http://127.0.0.1:${HTTP_PORT}/api/settings/detector" >/dev/null
+    ok "detector device saved as ${requested}"
 }
 
 # --------------------------------------------------------------------------
@@ -757,6 +1003,7 @@ EOF
 do_install() {
     step "Installing turret-control"
     check_os
+    choose_initial_ai_device
     install_packages
     create_user
     create_directories
@@ -769,6 +1016,7 @@ do_install() {
     install_web_updater
     restart_service
     wait_for_health
+    apply_initial_ai_device
     verify_http_endpoints
     summary
 }
@@ -939,4 +1187,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

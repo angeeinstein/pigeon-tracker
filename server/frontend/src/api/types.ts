@@ -45,12 +45,20 @@ export interface SystemUpdateStatus {
   updater_available: boolean;
   permission_mode: string;
   version_check: SystemVersionCheck;
+  maintenance: SystemUpdateMaintenance;
 }
 
 export interface SystemUpdateOverview {
   state: SystemUpdateState;
   updater_available: boolean;
   version_check: SystemVersionCheck;
+  maintenance: SystemUpdateMaintenance;
+}
+
+export interface SystemUpdateMaintenance {
+  required: boolean;
+  reason: string | null;
+  message: string | null;
 }
 
 export interface TrackView {

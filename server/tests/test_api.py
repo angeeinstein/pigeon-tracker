@@ -66,6 +66,7 @@ class TestHealth:
         status_response = client.get("/api/system/update")
         assert status_response.status_code == 200
         assert "version_check" in status_response.json()
+        assert "maintenance" in status_response.json()
 
         assert client.post("/api/system/update", json={"confirmation": "yes"}).status_code == 422
         unavailable = client.post("/api/system/update", json={"confirmation": "UPDATE"})

@@ -67,6 +67,8 @@ remain available for automation:
 ```bash
 sudo bash install.sh --update --yes
 sudo bash install.sh --branch dev --no-ai      # skip torch: much smaller
+sudo bash install.sh --gpu                     # prepare optional NVIDIA/CUDA support
+sudo bash install.sh --cpu-only                # explicitly keep inference on CPU
 sudo bash install.sh --status
 sudo bash install.sh --repair                  # rebuild venv + UI, keep data
 turret-update --backup
@@ -90,6 +92,29 @@ installs and starts the systemd unit, and verifies `/api/health`.
 The purge option removes the service, code, configuration, database, models,
 snapshots, backups, launchers and service account. Shared OS packages and the
 system-wide journal remain untouched so unrelated applications are not broken.
+
+GPU inference remains optional. On a fresh interactive install, the script asks
+whether to download CUDA support when it sees an exposed NVIDIA device; the
+safe unattended default is CPU. Later updates follow the device saved under
+**Settings → AI**. Selecting `Automatic` or `CUDA preferred` when GPU
+dependencies are missing adds a **GPU setup available** maintenance action to
+the System page; running it installs the dependencies and restarts normally.
+Selecting `CPU only` performs no NVIDIA setup and produces no GPU warnings.
+
+For an unprivileged Proxmox LXC, first add the
+chosen `/dev/nvidiaN` plus `/dev/nvidiactl`, `/dev/nvidia-uvm` and
+`/dev/nvidia-uvm-tools` under **Resources → Add → Device Passthrough**. The host
+operation cannot safely be performed from inside the container. Once those
+devices are exposed, `install.sh` reads the host kernel-driver version, installs
+the exactly matching NVIDIA userspace without attempting a container kernel
+module, and verifies `nvidia-smi`. It selects CUDA 12.6 PyTorch for legacy
+Maxwell/Pascal/Volta GPUs and the current CUDA build for newer architectures,
+then verifies that the wheel contains kernels for the selected GPU. With no
+exposed NVIDIA device it keeps CPU inference. A userspace, CUDA or
+compatibility failure is reported prominently but falls back to a verified CPU
+installation; the System maintenance update or `turret-update --gpu` retries
+GPU setup later. Allow several
+extra gigabytes of disk space for CUDA dependencies.
 
 Existing configuration, calibration, zones and events are **never** overwritten
 by an update; they are backed up to `/var/backups/turret-control` first, and a
@@ -140,11 +165,13 @@ systemctl restart turret-control
    where the geometry differs.
 5. **Zones**: draw an *active* zone where engagement is allowed and *no-spray*
    zones anywhere water must not go (the neighbour's window, the doorway).
-6. **Settings → AI**: use `cpu`, class `bird`, and start with the 960 px input
-   default. The capture threshold keeps uncertain proposals for review without
-   allowing them into tracking. Existing installations retain their saved
-   device and input-size values during updates, so change those two fields
-   explicitly if they were previously `auto` / 640. Class selectors use the
+6. **Settings → AI**: choose `CPU only` to ignore mapped GPUs without warnings,
+   `Automatic` for quiet CUDA-to-CPU fallback between different servers, or
+   `CUDA preferred` when an unavailable GPU should be reported. Select class
+   `bird` and start with the 960 px input default. The capture threshold keeps
+   uncertain proposals for review without allowing them into tracking.
+   Existing installations retain their saved device and input-size values
+   during updates, so change those two fields explicitly if needed. Class selectors use the
    vocabulary reported by the active model and flag names that the model does
    not provide; changing models preserves the selection for explicit review.
 7. **Settings → Scene motion** continuously learns the static primary-camera

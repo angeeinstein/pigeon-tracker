@@ -1,7 +1,10 @@
 """Detector proposal and operational confidence tiers."""
 
+from pathlib import Path
+
 from app.services.settings_schema import DetectorSettings
 from app.vision.detector import Detection, MockDetector
+from app.vision.yolo_detector import nvidia_device_exposed
 
 
 def detection(confidence: float) -> Detection:
@@ -44,3 +47,11 @@ def test_capture_threshold_does_not_remove_operational_detections() -> None:
 
     assert detector.capturable(raw) == []
     assert detector.operational(raw) == raw
+
+
+def test_nvidia_device_requires_control_and_numbered_gpu_nodes(tmp_path: Path) -> None:
+    (tmp_path / "nvidia1").touch()
+    assert not nvidia_device_exposed(tmp_path)
+
+    (tmp_path / "nvidiactl").touch()
+    assert nvidia_device_exposed(tmp_path)
