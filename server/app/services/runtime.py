@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +45,7 @@ from app.turret.models import TurretError
 from app.turret.simulator import SimulatedController
 from app.version import version_info
 from app.vision.overlays import render_overlay
-from app.vision.pipeline import VisionPipeline, VisionResult
+from app.vision.pipeline import VisionPipeline, VisionResult, _detection_iou
 
 log = get_logger(__name__)
 
@@ -89,6 +90,10 @@ class Runtime:
         self._tasks: list[asyncio.Task[Any]] = []
         self._last_selection: SelectionResult | None = None
         self._detection_last_seen: dict[tuple[str, str], float] = {}
+        self._low_evidence_history: dict[
+            tuple[str, str, str, str], tuple[float, list[Any]]
+        ] = {}
+        self._low_evidence_suppressed: dict[tuple[str, str, str, str], int] = {}
         self._stopping = False
 
     # ------------------------------------------------------------------
@@ -200,20 +205,26 @@ class Runtime:
         capture: dict[str, object] | None = None
         if detector.capture_enabled and result.image is not None:
             primary = max(due, key=lambda item: max(item[2]))
-            try:
-                capture = await self.detection_captures.create(
-                    image=result.image,
-                    camera_id=result.camera_id,
-                    frame_seq=result.frame_seq,
-                    detections=result.proposals,
-                    class_name=primary[1],
-                    confidence=max(primary[2]),
-                    model_name=detector.model_path,
-                    detector_settings=detector.model_dump(mode="json"),
-                    jpeg_quality=detector.capture_jpeg_quality,
-                )
-            except Exception:
-                log.exception("failed to save detection capture")
+            if not self._suppress_repetitive_low_evidence(
+                result,
+                class_key=primary[0],
+                detections=result.proposals,
+                trigger="detection",
+            ):
+                try:
+                    capture = await self.detection_captures.create(
+                        image=result.image,
+                        camera_id=result.camera_id,
+                        frame_seq=result.frame_seq,
+                        detections=result.proposals,
+                        class_name=primary[1],
+                        confidence=max(primary[2]),
+                        model_name=detector.model_path,
+                        detector_settings=detector.model_dump(mode="json"),
+                        jpeg_quality=detector.capture_jpeg_quality,
+                    )
+                except Exception:
+                    log.exception("failed to save detection capture")
 
         for _class_key, label, confidences in due:
             data: dict[str, object] = {
@@ -225,6 +236,11 @@ class Runtime:
             }
             if capture is not None:
                 data["capture_id"] = capture["id"]
+            suppressed = self._take_suppressed_evidence_count(
+                result.camera_id, detector.model_path, "detection", _class_key
+            )
+            if suppressed:
+                data["suppressed_repetitive_evidence"] = suppressed
             await self.events.emit(
                 ev.CAT_DETECTION,
                 f"{label} detected",
@@ -237,6 +253,13 @@ class Runtime:
             return
         detector = self.settings.detector
         motion = self.settings.scene_motion
+        if self._suppress_repetitive_low_evidence(
+            result,
+            class_key=evidence.class_name.casefold(),
+            detections=evidence.detections,
+            trigger="motion-rescan",
+        ):
+            return
         settings_snapshot: dict[str, object] = detector.model_dump(mode="json")
         settings_snapshot["scene_motion"] = motion.model_dump(mode="json")
         settings_snapshot["motion_regions"] = [region.as_dict() for region in evidence.regions]
@@ -267,7 +290,59 @@ class Runtime:
                 "boxes": len(evidence.detections),
                 "rescan_ms": round(evidence.rescan_ms, 1),
                 "capture_id": capture["id"],
+                "suppressed_repetitive_evidence": self._take_suppressed_evidence_count(
+                    result.camera_id,
+                    detector.model_path,
+                    "motion-rescan",
+                    evidence.class_name.casefold(),
+                ),
             },
+        )
+
+    def _suppress_repetitive_low_evidence(
+        self,
+        result: VisionResult,
+        *,
+        class_key: str,
+        detections: list[Any],
+        trigger: str,
+    ) -> bool:
+        """Limit only duplicate review frames below operational confidence.
+
+        Inference results are never removed and operational detections are
+        never delayed. A weak stationary bird is saved immediately and then
+        periodically while the same low-confidence box persists.
+        """
+        detector = self.settings.detector
+        relevant = [
+            item for item in detections if item.class_name.casefold() == class_key.casefold()
+        ]
+        if not relevant or any(item.confidence >= detector.confidence for item in relevant):
+            return False
+        key = (result.camera_id, detector.model_path, trigger, class_key.casefold())
+        previous = self._low_evidence_history.get(key)
+        repetitive = bool(
+            previous
+            and result.frame_ts - previous[0] < detector.capture_repeat_s
+            and all(
+                any(
+                    _detection_iou(current, old) >= detector.capture_repeat_iou
+                    for old in previous[1]
+                )
+                for current in relevant
+            )
+        )
+        if repetitive:
+            self._low_evidence_suppressed[key] = self._low_evidence_suppressed.get(key, 0) + 1
+            return True
+        self._low_evidence_history[key] = (result.frame_ts, list(relevant))
+        return False
+
+    def _take_suppressed_evidence_count(
+        self, camera_id: str, model_path: str, trigger: str, class_key: str
+    ) -> int:
+        return self._low_evidence_suppressed.pop(
+            (camera_id, model_path, trigger, class_key.casefold()), 0
         )
 
     @property
@@ -899,6 +974,7 @@ class Runtime:
         return {
             **status,
             "installed_models": self.installed_detector_models(),
+            "model_profiles": self.detector_model_profiles(),
             "available_classes": available,
             "validation_available": validation_available,
             "configured_classes": detector_classes,
@@ -919,6 +995,34 @@ class Runtime:
             )
         except FileNotFoundError:
             return []
+
+    def detector_model_profiles(self) -> dict[str, dict[str, Any]]:
+        """Return validated sidecar metadata shipped with trained checkpoints."""
+        profiles: dict[str, dict[str, Any]] = {}
+        for model in self.installed_detector_models():
+            path = self.config.resolved_models_dir / f"{model}.json"
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                thresholds = raw.get("recommended_thresholds")
+                if isinstance(raw, dict) and isinstance(thresholds, dict):
+                    normalized = {
+                        name: float(thresholds[name])
+                        for name in ("operational", "capture", "rescan")
+                    }
+                    if not all(0.01 <= value <= 0.99 for value in normalized.values()):
+                        continue
+                    raw["recommended_thresholds"] = normalized
+                    profiles[model] = raw
+            except (
+                FileNotFoundError,
+                KeyError,
+                OSError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
+                continue
+        return profiles
 
     def system_info(self) -> dict[str, Any]:
         from app.vision.yolo_detector import gpu_info

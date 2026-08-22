@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import tempfile
@@ -28,8 +27,14 @@ ANNOTATION_STATUSES = ("unreviewed", "accepted", "rejected")
 
 
 def _review_queue_conditions(
-    review_status: str | None,
-    class_name: str | None,
+    review_status: str | None = None,
+    class_name: str | None = None,
+    model_name: str | None = None,
+    trigger: str | None = None,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
+    after: datetime | None = None,
+    before: datetime | None = None,
 ) -> list[Any]:
     """Build filters for captures that represent model or manual evidence.
 
@@ -49,6 +54,18 @@ def _review_queue_conditions(
         conditions.append(DetectionCapture.review_status == review_status)
     if class_name:
         conditions.append(DetectionCapture.class_name == class_name)
+    if model_name:
+        conditions.append(DetectionCapture.model_name == model_name)
+    if trigger:
+        conditions.append(DetectionCapture.trigger == trigger)
+    if min_confidence is not None:
+        conditions.append(DetectionCapture.confidence >= min_confidence)
+    if max_confidence is not None:
+        conditions.append(DetectionCapture.confidence <= max_confidence)
+    if after is not None:
+        conditions.append(DetectionCapture.ts >= after)
+    if before is not None:
+        conditions.append(DetectionCapture.ts <= before)
     return conditions
 
 
@@ -154,9 +171,24 @@ class DetectionCaptureStore:
         offset: int = 0,
         review_status: str | None = None,
         class_name: str | None = None,
+        model_name: str | None = None,
+        trigger: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+        after: datetime | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, object]]:
         def _query(session: Session) -> list[dict[str, object]]:
-            conditions = _review_queue_conditions(review_status, class_name)
+            conditions = _review_queue_conditions(
+                review_status,
+                class_name,
+                model_name,
+                trigger,
+                min_confidence,
+                max_confidence,
+                after,
+                before,
+            )
             stmt = (
                 select(DetectionCapture)
                 .where(*conditions)
@@ -174,11 +206,26 @@ class DetectionCaptureStore:
         offset: int = 0,
         review_status: str | None = None,
         class_name: str | None = None,
+        model_name: str | None = None,
+        trigger: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+        after: datetime | None = None,
+        before: datetime | None = None,
     ) -> dict[str, object]:
         """Return one metadata page plus the uncapped filtered total."""
 
         def _query(session: Session) -> dict[str, object]:
-            conditions = _review_queue_conditions(review_status, class_name)
+            conditions = _review_queue_conditions(
+                review_status,
+                class_name,
+                model_name,
+                trigger,
+                min_confidence,
+                max_confidence,
+                after,
+                before,
+            )
             total = int(
                 session.scalar(
                     select(func.count()).select_from(DetectionCapture).where(*conditions)
@@ -208,13 +255,28 @@ class DetectionCaptureStore:
         direction: str,
         review_status: str | None = None,
         class_name: str | None = None,
+        model_name: str | None = None,
+        trigger: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+        after: datetime | None = None,
+        before: datetime | None = None,
     ) -> dict[str, object] | None:
         """Find an adjacent filtered capture by id, independent of page boundaries."""
         if direction not in {"current", "previous", "next"}:
             raise ValueError("invalid navigation direction")
 
         def _query(session: Session) -> dict[str, object] | None:
-            conditions = _review_queue_conditions(review_status, class_name)
+            conditions = _review_queue_conditions(
+                review_status,
+                class_name,
+                model_name,
+                trigger,
+                min_confidence,
+                max_confidence,
+                after,
+                before,
+            )
 
             if direction == "current":
                 # The current capture may just have left the active filter
@@ -500,7 +562,7 @@ class DetectionCaptureStore:
                             "format_version": 1,
                             "class_names": ["bird"],
                             "split_strategy": (
-                                "camera episodes kept together"
+                                "latest camera episodes held out for validation"
                                 if has_independent_validation
                                 else "train reused for validation; collect another episode"
                             ),
@@ -520,10 +582,12 @@ class DetectionCaptureStore:
                     "dataset and opens a training GUI. NVIDIA hardware automatically receives "
                     "and verifies CUDA-enabled PyTorch instead of silently training on CPU. "
                     "The GUI explains its settings and shows batch/epoch progress, validation "
-                    "metrics, GPU memory, elapsed time and estimated remaining time. The trained "
-                    "best.pt is written below the training-runs directory.\n"
+                    "metrics, GPU memory, elapsed time and estimated remaining time. The trainer "
+                    "tests fixed confidence thresholds and writes best.pt plus an upload-ready "
+                    "pigeon-model.zip with its recommended deployment thresholds.\n"
                     "Train/validation assignment keeps captures from the same camera episode "
-                    "together. "
+                    "together and holds out the latest episodes, which better represents future "
+                    "deployment than a random split. "
                     + (
                         "Inspect manifest.json before training.\n"
                         if has_independent_validation
@@ -562,6 +626,42 @@ class DetectionCaptureStore:
             return False
         await asyncio.to_thread((self.directory / name).unlink, missing_ok=True)
         return True
+
+    async def bulk_review(self, capture_ids: Sequence[int], action: str) -> dict[str, int]:
+        """Reject or delete an explicit operator-selected set of captures."""
+        ids = sorted({int(value) for value in capture_ids if int(value) > 0})
+        if not ids or len(ids) > 500:
+            raise ValueError("select between 1 and 500 captures")
+        if action not in {"reject", "delete"}:
+            raise ValueError("bulk action must be reject or delete")
+
+        def _apply(session: Session) -> Sequence[str]:
+            rows = session.scalars(
+                select(DetectionCapture).where(DetectionCapture.id.in_(ids))
+            ).all()
+            image_names: list[str] = []
+            for row in rows:
+                if action == "delete":
+                    image_names.append(row.image_name)
+                    session.delete(row)
+                    continue
+                annotations = [_normalise_annotation(item) for item in row.detections]
+                for annotation in annotations:
+                    annotation["review_status"] = "rejected"
+                    annotation["review_label"] = ""
+                row.detections = annotations
+                row.review_status = "rejected"
+                row.review_label = "not-bird"
+            session.flush()
+            return image_names if action == "delete" else [str(row.id) for row in rows]
+
+        affected = await run_db(_apply)
+        if action == "delete":
+            for image_name in affected:
+                path = self.image_path(image_name)
+                if path is not None:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+        return {"affected": len(affected)}
 
     def image_path(self, name: str) -> Path | None:
         """Resolve an image name without allowing traversal outside the store."""
@@ -645,7 +745,7 @@ def _yolo_box(
 
 
 def _episode_splits(rows: list[dict[str, Any]]) -> dict[int, str]:
-    """Keep temporally adjacent frames together to reduce validation leakage."""
+    """Hold out the latest complete camera episodes for forward validation."""
     ordered = sorted(rows, key=lambda row: (str(row["camera_id"]), str(row["ts"])))
     episodes: list[list[int]] = []
     last_camera = ""
@@ -663,10 +763,15 @@ def _episode_splits(rows: list[dict[str, Any]]) -> dict[int, str]:
 
     validation: set[int] = set()
     if len(episodes) > 1:
-        ranked = sorted(
-            episodes,
-            key=lambda episode: hashlib.sha256(str(episode[0]).encode()).hexdigest(),
-        )
-        count = max(1, round(len(ranked) * 0.2))
-        validation = {capture_id for episode in ranked[:count] for capture_id in episode}
+        timestamps = {int(row["id"]): datetime.fromisoformat(str(row["ts"])) for row in rows}
+        latest = sorted(episodes, key=lambda episode: timestamps[episode[-1]], reverse=True)
+        target_images = max(1, round(len(rows) * 0.2))
+        selected: list[list[int]] = []
+        selected_images = 0
+        for episode in latest[:-1]:
+            selected.append(episode)
+            selected_images += len(episode)
+            if selected_images >= target_images:
+                break
+        validation = {capture_id for episode in selected for capture_id in episode}
     return {int(row["id"]): "val" if int(row["id"]) in validation else "train" for row in rows}

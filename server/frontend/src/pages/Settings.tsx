@@ -13,6 +13,7 @@ import { api } from '../api/client';
 import type {
   CameraConfig,
   DetectorCatalog,
+  DetectorThresholdProfile,
   OnvifDevice,
   OnvifProfile,
   OnvifProfileResult,
@@ -64,84 +65,147 @@ const SECTION_DESCRIPTIONS: Record<SectionName, string> = {
 const FIELD_PATHS: Record<SectionName, Record<string, string>> = {
   cameras: {
     'Primary camera (detection & calibration)': 'primary_id',
-    Id: 'id', Name: 'name', 'RTSP URL': 'url', Role: 'role', Backend: 'backend',
-    Transport: 'transport', 'Latency buffer': 'latency_ms', 'Downscale width': 'target_width',
-    'Stall timeout': 'stall_timeout_s', Enabled: 'enabled',
+    Id: 'id',
+    Name: 'name',
+    'RTSP URL': 'url',
+    Role: 'role',
+    Backend: 'backend',
+    Transport: 'transport',
+    'Latency buffer': 'latency_ms',
+    'Downscale width': 'target_width',
+    'Stall timeout': 'stall_timeout_s',
+    Enabled: 'enabled',
   },
   detector: {
-    'Detection enabled': 'enabled', Backend: 'backend', Model: 'model_path', Device: 'device',
-    'Save detection evidence': 'capture_enabled', 'Capture threshold': 'capture_confidence',
-    'Capture re-arm': 'capture_rearm_s', 'Capture JPEG quality': 'capture_jpeg_quality',
-    'Confidence threshold': 'confidence', 'NMS IoU': 'iou', 'Inference rate': 'fps',
-    'Input size': 'input_size', Classes: 'classes', 'Half precision (CUDA only)': 'half',
+    'Detection enabled': 'enabled',
+    Backend: 'backend',
+    Model: 'model_path',
+    Device: 'device',
+    'Save detection evidence': 'capture_enabled',
+    'Capture threshold': 'capture_confidence',
+    'Capture re-arm': 'capture_rearm_s',
+    'Weak evidence repeat': 'capture_repeat_s',
+    'Weak evidence overlap': 'capture_repeat_iou',
+    'Capture JPEG quality': 'capture_jpeg_quality',
+    'Confidence threshold': 'confidence',
+    'NMS IoU': 'iou',
+    'Inference rate': 'fps',
+    'Input size': 'input_size',
+    Classes: 'classes',
+    'Half precision (CUDA only)': 'half',
   },
   tracker: {
-    'Tracking enabled': 'enabled', 'Track threshold': 'track_thresh', 'Low threshold': 'low_thresh',
-    'Match threshold (IoU distance)': 'match_thresh', 'Track buffer': 'track_buffer',
+    'Tracking enabled': 'enabled',
+    'Track threshold': 'track_thresh',
+    'Low threshold': 'low_thresh',
+    'Match threshold (IoU distance)': 'match_thresh',
+    'Track buffer': 'track_buffer',
     'Minimum hits to confirm': 'min_hits',
   },
   scene_motion: {
-    'Scene motion enabled': 'enabled', 'Processing width': 'processing_width',
-    'Background history': 'history_frames', Sensitivity: 'variance_threshold',
-    'Detect shadows': 'detect_shadows', Warmup: 'warmup_s',
-    'Minimum motion area': 'min_area_ratio', 'Maximum motion area': 'max_area_ratio',
+    'Scene motion enabled': 'enabled',
+    'Processing width': 'processing_width',
+    'Background history': 'history_frames',
+    Sensitivity: 'variance_threshold',
+    'Detect shadows': 'detect_shadows',
+    Warmup: 'warmup_s',
+    'Minimum motion area': 'min_area_ratio',
+    'Maximum motion area': 'max_area_ratio',
     'Maximum whole-frame change': 'max_frame_change_ratio',
     'Minimum changed-pixel density': 'min_fill_ratio',
-    'Minimum region speed': 'min_speed_ratio_s', 'Maximum region speed': 'max_speed_ratio_s',
-    'Minimum persistence': 'min_persistence_frames', 'Crop padding': 'crop_padding_ratio',
-    'Minimum crop width': 'min_crop_width_ratio', 'Rescan confidence': 'rescan_confidence',
-    'Rescan classes': 'rescan_classes', 'Rescan interval': 'rescan_interval_s',
-    'Maximum rescans per event': 'max_rescans_per_event', 'Event re-arm': 'event_rearm_s',
+    'Minimum region speed': 'min_speed_ratio_s',
+    'Maximum region speed': 'max_speed_ratio_s',
+    'Minimum persistence': 'min_persistence_frames',
+    'Crop padding': 'crop_padding_ratio',
+    'Minimum crop width': 'min_crop_width_ratio',
+    'Rescan confidence': 'rescan_confidence',
+    'Rescan classes': 'rescan_classes',
+    'Rescan interval': 'rescan_interval_s',
+    'Maximum rescans per event': 'max_rescans_per_event',
+    'Event re-arm': 'event_rearm_s',
     'Maximum simultaneous regions': 'max_regions',
   },
   motion: {
-    'Pan minimum': 'pan_min_deg', 'Pan maximum': 'pan_max_deg', 'Tilt minimum': 'tilt_min_deg',
-    'Tilt maximum': 'tilt_max_deg', 'Maximum speed': 'max_speed_deg_s', Acceleration: 'accel_deg_s2',
-    'Manual/jog speed': 'manual_speed_deg_s', 'Jog timeout': 'jog_ttl_ms',
-    'Aim tolerance': 'aim_tolerance_deg', 'Park pan': 'park_pan_deg', 'Park tilt': 'park_tilt_deg',
+    'Pan minimum': 'pan_min_deg',
+    'Pan maximum': 'pan_max_deg',
+    'Tilt minimum': 'tilt_min_deg',
+    'Tilt maximum': 'tilt_max_deg',
+    'Maximum speed': 'max_speed_deg_s',
+    Acceleration: 'accel_deg_s2',
+    'Manual/jog speed': 'manual_speed_deg_s',
+    'Jog timeout': 'jog_ttl_ms',
+    'Aim tolerance': 'aim_tolerance_deg',
+    'Park pan': 'park_pan_deg',
+    'Park tilt': 'park_tilt_deg',
     'Home automatically when the controller connects': 'auto_home_on_connect',
   },
   controller: {
-    'Controller mode': 'mode', 'Controller id': 'controller_id', 'Status timeout': 'status_timeout_s',
-    'Command timeout': 'command_timeout_s', 'Homing timeout': 'home_timeout_s',
-    'Ping interval': 'ping_interval_s', 'Push configuration on connect': 'push_config_on_connect',
-    'Motor steps per revolution': 'hardware.steps_per_rev', 'Pan microsteps': 'hardware.pan_microsteps',
-    'Tilt microsteps': 'hardware.tilt_microsteps', 'Pan gear ratio': 'hardware.pan_gear_ratio',
-    'Tilt gear ratio': 'hardware.tilt_gear_ratio', 'Homing speed': 'hardware.homing_speed_deg_s',
-    'Homing back-off': 'hardware.homing_backoff_deg', 'Pan home offset': 'hardware.pan_home_offset_deg',
+    'Controller mode': 'mode',
+    'Controller id': 'controller_id',
+    'Status timeout': 'status_timeout_s',
+    'Command timeout': 'command_timeout_s',
+    'Homing timeout': 'home_timeout_s',
+    'Ping interval': 'ping_interval_s',
+    'Push configuration on connect': 'push_config_on_connect',
+    'Motor steps per revolution': 'hardware.steps_per_rev',
+    'Pan microsteps': 'hardware.pan_microsteps',
+    'Tilt microsteps': 'hardware.tilt_microsteps',
+    'Pan gear ratio': 'hardware.pan_gear_ratio',
+    'Tilt gear ratio': 'hardware.tilt_gear_ratio',
+    'Homing speed': 'hardware.homing_speed_deg_s',
+    'Homing back-off': 'hardware.homing_backoff_deg',
+    'Pan home offset': 'hardware.pan_home_offset_deg',
     'Tilt home offset': 'hardware.tilt_home_offset_deg',
     'Pan homes toward maximum endstop': 'hardware.pan_home_dir',
     'Tilt homes toward maximum endstop': 'hardware.tilt_home_dir',
-    'Invert pan direction': 'hardware.pan_invert', 'Invert tilt direction': 'hardware.tilt_invert',
+    'Invert pan direction': 'hardware.pan_invert',
+    'Invert tilt direction': 'hardware.tilt_invert',
     'Endstops active low': 'hardware.endstop_active_low',
     'Allow motion before homing': 'hardware.allow_unhomed_motion',
   },
   spray: {
-    'Water output enabled': 'enabled', 'Default duration': 'default_duration_ms',
-    'Maximum single burst': 'max_duration_ms', 'Minimum interval': 'min_interval_s',
-    'Duty budget': 'duty_budget_ms', 'Duty window': 'duty_window_s',
+    'Water output enabled': 'enabled',
+    'Default duration': 'default_duration_ms',
+    'Maximum single burst': 'max_duration_ms',
+    'Minimum interval': 'min_interval_s',
+    'Duty budget': 'duty_budget_ms',
+    'Duty window': 'duty_window_s',
   },
   targeting: {
-    'Automatic targeting': 'auto_enabled', 'Target classes': 'target_classes',
-    'Minimum confidence': 'min_confidence', 'Minimum track age': 'min_track_duration_s',
-    'Selection stability': 'detect_stability_s', 'Selection policy': 'selection',
-    'Aim point (horizontal)': 'aim_x_ratio', 'Aim point (vertical)': 'aim_y_ratio',
-    'Pan offset': 'aim_pan_offset_deg', 'Tilt offset': 'aim_tilt_offset_deg',
-    'Aim timeout': 'aim_timeout_s', 'Verify duration': 'verify_duration_s',
-    'Lost-target grace': 'lost_grace_s', 'Result window': 'result_window_s',
-    'Maximum retries': 'max_retries', Cooldown: 'cooldown_s',
-    'Retarget deadband': 'retarget_deadband_deg', 'Only engage inside active zones': 'require_active_zone',
+    'Automatic targeting': 'auto_enabled',
+    'Target classes': 'target_classes',
+    'Minimum confidence': 'min_confidence',
+    'Minimum track age': 'min_track_duration_s',
+    'Selection stability': 'detect_stability_s',
+    'Selection policy': 'selection',
+    'Aim point (horizontal)': 'aim_x_ratio',
+    'Aim point (vertical)': 'aim_y_ratio',
+    'Pan offset': 'aim_pan_offset_deg',
+    'Tilt offset': 'aim_tilt_offset_deg',
+    'Aim timeout': 'aim_timeout_s',
+    'Verify duration': 'verify_duration_s',
+    'Lost-target grace': 'lost_grace_s',
+    'Result window': 'result_window_s',
+    'Maximum retries': 'max_retries',
+    Cooldown: 'cooldown_s',
+    'Retarget deadband': 'retarget_deadband_deg',
+    'Only engage inside active zones': 'require_active_zone',
     'Follow the target continuously': 'continuous_tracking',
     'Save a snapshot on engagement': 'snapshot_on_engage',
   },
   ui: {
-    'Preview rate': 'preview_fps', 'Preview width': 'preview_width', 'JPEG quality': 'preview_quality',
-    'Telemetry rate': 'telemetry_hz', 'Draw detection overlays into the video': 'draw_overlays',
+    'Preview rate': 'preview_fps',
+    'Preview width': 'preview_width',
+    'JPEG quality': 'preview_quality',
+    'Telemetry rate': 'telemetry_hz',
+    'Draw detection overlays into the video': 'draw_overlays',
     'Draw zones into the video': 'draw_zones',
   },
   system: {
-    'Event retention': 'event_retention_days', 'Maximum events': 'max_events',
-    'Snapshot retention': 'snapshot_retention_days', 'Snapshot budget': 'max_snapshot_mb',
+    'Event retention': 'event_retention_days',
+    'Maximum events': 'max_events',
+    'Snapshot retention': 'snapshot_retention_days',
+    'Snapshot budget': 'max_snapshot_mb',
     'Detection retention': 'detection_retention_days',
     'Detection image budget': 'max_detection_mb',
   },
@@ -156,12 +220,14 @@ function clone<T>(value: T): T {
 }
 
 function slugCameraId(name: string): string {
-  return name
-    .normalize('NFKD')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || 'camera';
+  return (
+    name
+      .normalize('NFKD')
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64) || 'camera'
+  );
 }
 
 function uniqueCameraId(name: string, sources: CameraConfig[], currentIndex = -1): string {
@@ -178,7 +244,11 @@ function uniqueCameraId(name: string, sources: CameraConfig[], currentIndex = -1
   return `${base.slice(0, 52)}-${Date.now().toString(36)}`.slice(0, 64);
 }
 
-function cameraIdError(id: string, sources: CameraConfig[], currentIndex: number): string | undefined {
+function cameraIdError(
+  id: string,
+  sources: CameraConfig[],
+  currentIndex: number,
+): string | undefined {
   if (!id) return 'An id is required.';
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return "Use only letters, numbers, '-' and '_'.";
   if (id.length > 64) return 'Use at most 64 characters.';
@@ -257,7 +327,9 @@ function useSettingAdornment(label: string) {
   return {
     settingStatus,
     onSettingReset: () => context.resetValue(path, clone(resetTarget)),
-    settingResetLabel: unsaved ? `Undo unsaved change to ${label}` : `Reset ${label} to factory default`,
+    settingResetLabel: unsaved
+      ? `Undo unsaved change to ${label}`
+      : `Reset ${label} to factory default`,
   };
 }
 
@@ -442,11 +514,13 @@ function DetectorModelStatus({
 
 function DetectorModelManager({
   catalog,
+  selectedModel,
   onSelect,
   onCatalogReload,
 }: {
   catalog: DetectorCatalog | null;
-  onSelect: (filename: string) => void;
+  selectedModel: string;
+  onSelect: (filename: string, thresholds?: DetectorThresholdProfile) => void;
   onCatalogReload: () => void;
 }) {
   const inputId = useId();
@@ -460,7 +534,27 @@ function DetectorModelManager({
     setFile(selected);
     if (!selected) return;
     const clean = selected.name.replace(/[^A-Za-z0-9._-]+/g, '-');
-    setFilename(clean.toLowerCase() === 'best.pt' ? 'pigeon-v1.pt' : clean);
+    setFilename(
+      clean.toLowerCase() === 'best.pt' || clean.toLowerCase().endsWith('.zip')
+        ? 'pigeon-v1.pt'
+        : clean,
+    );
+  };
+
+  const selectWithProfile = (model: string, profile = catalog?.model_profiles?.[model]) => {
+    if (
+      profile &&
+      window.confirm(
+        `Apply ${model}'s validated thresholds as well?\n\n` +
+          `Operational ${profile.recommended_thresholds.operational.toFixed(2)}, ` +
+          `capture ${profile.recommended_thresholds.capture.toFixed(2)}, ` +
+          `motion rescan ${profile.recommended_thresholds.rescan.toFixed(2)}`,
+      )
+    ) {
+      onSelect(model, profile.recommended_thresholds);
+    } else {
+      onSelect(model);
+    }
   };
 
   const upload = async () => {
@@ -468,7 +562,7 @@ function DetectorModelManager({
     setUploading(true);
     try {
       const result = await api.uploadDetectorModel(file, filename.trim(), overwrite);
-      onSelect(result.filename);
+      selectWithProfile(result.filename, result.profile ?? undefined);
       onCatalogReload();
       notify(`${result.filename} uploaded and selected. Save all changes to activate it.`, 'good');
     } catch (error) {
@@ -484,8 +578,9 @@ function DetectorModelManager({
         <div>
           <p className="text-sm font-semibold text-ink">Install a trained model</p>
           <p className="text-xs text-muted">
-            Upload the trainer&apos;s best.pt directly to the server, then save this settings page
-            to load it. The previous model remains active if loading fails.
+            Upload the trainer&apos;s pigeon-model.zip to include its validated thresholds, or
+            upload best.pt by itself. Save this settings page to load it; the previous model remains
+            active if loading fails.
           </p>
         </div>
         {catalog?.installed_models.length ? (
@@ -504,10 +599,11 @@ function DetectorModelManager({
               key={model}
               type="button"
               className="btn px-2 py-1 text-xs"
-              onClick={() => onSelect(model)}
+              onClick={() => selectWithProfile(model)}
               title={`Select ${model}`}
             >
               {model}
+              {catalog.model_profiles?.[model] ? ' + profile' : ''}
             </button>
           ))}
         </div>
@@ -515,11 +611,11 @@ function DetectorModelManager({
 
       <div className="mt-3 grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
         <label className="block text-xs text-muted" htmlFor={inputId}>
-          Model checkpoint (.pt)
+          Model checkpoint (.pt) or trainer deployment package (.zip)
           <input
             id={inputId}
             type="file"
-            accept=".pt,application/octet-stream"
+            accept=".pt,.zip,application/octet-stream,application/zip"
             className="field mt-1 block w-full file:mr-3 file:rounded file:border-0 file:bg-accent/15 file:px-2 file:py-1 file:text-ink"
             disabled={uploading}
             onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}
@@ -552,6 +648,11 @@ function DetectorModelManager({
         />
         Replace an existing file with this name (the currently configured model is protected)
       </label>
+      {catalog?.model_profiles?.[selectedModel] && (
+        <p className="mt-2 text-xs text-accent">
+          This model includes validated threshold recommendations. Select it again to apply them.
+        </p>
+      )}
     </div>
   );
 }
@@ -585,7 +686,8 @@ function SceneMotionPreview({
         <div>
           <p className="text-sm font-semibold text-ink">Live foreground mask</p>
           <p className="text-xs text-muted">
-            White pixels changed against the learned background. This never replaces the camera feed.
+            White pixels changed against the learned background. This never replaces the camera
+            feed.
           </p>
         </div>
         <Pill tone={enabled ? 'good' : 'idle'}>{enabled ? 'continuous' : 'disabled'}</Pill>
@@ -622,7 +724,9 @@ function SceneMotionPreview({
         </div>
       ) : (
         <p className="rounded border border-edge bg-black/30 px-3 py-8 text-center text-xs text-muted">
-          {enabled ? 'Waiting for the first motion mask.' : 'Enable scene motion to start the mask.'}
+          {enabled
+            ? 'Waiting for the first motion mask.'
+            : 'Enable scene motion to start the mask.'}
         </p>
       )}
       <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted">
@@ -636,7 +740,8 @@ function SceneMotionPreview({
         </span>
       </div>
       <p className="mt-1 text-xs text-muted">
-        Real motion regions may have any shape; the guides show the same fraction of the complete image.
+        Real motion regions may have any shape; the guides show the same fraction of the complete
+        image.
       </p>
     </div>
   );
@@ -781,14 +886,27 @@ export default function Settings() {
       <div className="sticky top-2 z-20 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/25 bg-panel/95 px-3 py-2 shadow-lg backdrop-blur">
         <p className={`text-xs ${cameraProblem ? 'text-bad' : 'text-muted'}`}>
           {cameraProblem ? (
-            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-bad" />{cameraProblem}</>
+            <>
+              <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-bad" />
+              {cameraProblem}
+            </>
           ) : dirtySections.length > 0 ? (
-            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-warn" />{dirtySections.length} tab{dirtySections.length === 1 ? '' : 's'} with unsaved changes</>
+            <>
+              <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-warn" />
+              {dirtySections.length} tab{dirtySections.length === 1 ? '' : 's'} with unsaved changes
+            </>
           ) : (
-            <><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />All changes saved</>
+            <>
+              <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-accent" />
+              All changes saved
+            </>
           )}
         </p>
-        <button className="btn btn-primary px-3 py-1 text-xs" disabled={dirtySections.length === 0 || saving || Boolean(cameraProblem)} onClick={save}>
+        <button
+          className="btn btn-primary px-3 py-1 text-xs"
+          disabled={dirtySections.length === 0 || saving || Boolean(cameraProblem)}
+          onClick={save}
+        >
           {saving ? 'Saving…' : 'Save all changes'}
         </button>
       </div>
@@ -850,12 +968,25 @@ function SectionEditor({
       titleClassName="text-base font-semibold text-ink"
       className="border-2 border-edge/90"
       actions={
-        <button className="btn px-2 py-1 text-xs" onClick={resetSection} disabled={same(draft[section], defaults[section])}>
+        <button
+          className="btn px-2 py-1 text-xs"
+          onClick={resetSection}
+          disabled={same(draft[section], defaults[section])}
+        >
           Reset section
         </button>
       }
     >
-      <FieldContext.Provider value={{ section, saved: saved[section], draft: draft[section], defaults: defaults[section], prefix: '', resetValue }}>
+      <FieldContext.Provider
+        value={{
+          section,
+          saved: saved[section],
+          draft: draft[section],
+          defaults: defaults[section],
+          prefix: '',
+          resetValue,
+        }}
+      >
         <p className="mb-4 border-b border-edge pb-3 text-sm text-muted">
           {SECTION_DESCRIPTIONS[section]}
         </p>
@@ -869,6 +1000,25 @@ function SectionEditor({
             onDetectorCatalogReload={onDetectorCatalogReload}
             update={update}
             onCameraAdded={onCameraAdded}
+            applyDetectorModel={(model, thresholds) =>
+              setDraft((current) => ({
+                ...current!,
+                detector: {
+                  ...current!.detector,
+                  model_path: model,
+                  ...(thresholds
+                    ? {
+                        confidence: thresholds.operational,
+                        capture_confidence: thresholds.capture,
+                      }
+                    : {}),
+                },
+                scene_motion: {
+                  ...current!.scene_motion,
+                  ...(thresholds ? { rescan_confidence: thresholds.rescan } : {}),
+                },
+              }))
+            }
           />
         </div>
       </FieldContext.Provider>
@@ -885,6 +1035,7 @@ function Fields({
   onDetectorCatalogReload,
   update,
   onCameraAdded,
+  applyDetectorModel,
 }: {
   section: SectionName;
   draft: unknown;
@@ -894,6 +1045,7 @@ function Fields({
   onDetectorCatalogReload: () => void;
   update: (patch: Record<string, unknown>) => void;
   onCameraAdded: (cameras: SettingsType['cameras']) => void;
+  applyDetectorModel: (model: string, thresholds?: DetectorThresholdProfile) => void;
 }) {
   switch (section) {
     case 'cameras':
@@ -941,7 +1093,8 @@ function Fields({
           />
           <DetectorModelManager
             catalog={detectorCatalog}
-            onSelect={(model) => update({ model_path: model })}
+            selectedModel={value.model_path}
+            onSelect={applyDetectorModel}
             onCatalogReload={onDetectorCatalogReload}
           />
           <SelectField
@@ -978,8 +1131,8 @@ function Fields({
             onChange={(v) => update({ capture_confidence: v })}
             hint={
               value.capture_confidence < 0.1
-                ? 'Very low full-frame threshold: useful borderline birds are retained, but tiny texture false positives are expected. Try 0.10 and keep the motion-rescan threshold lower.'
-                : 'Full-frame evidence threshold. Keep this above the motion-rescan threshold so motion-guided crops can search more aggressively.'
+                ? 'Very low full-frame threshold: useful borderline birds are retained, but tiny texture false positives are expected. Thresholds must be calibrated separately for every model.'
+                : 'Full-frame evidence threshold. A trained-model package can provide a validated model-specific recommendation.'
             }
           />
           <NumberField
@@ -989,6 +1142,23 @@ function Fields({
             min={1}
             onChange={(v) => update({ capture_rearm_s: v })}
             hint="A continuously visible class creates one image, not one image per frame."
+          />
+          <NumberField
+            label="Weak evidence repeat"
+            suffix="s"
+            value={value.capture_repeat_s}
+            min={5}
+            onChange={(v) => update({ capture_repeat_s: v })}
+            hint="Only delays another review image for nearly identical boxes below the operational threshold. Detection and tracking continue continuously."
+          />
+          <NumberField
+            label="Weak evidence overlap"
+            value={value.capture_repeat_iou}
+            step={0.05}
+            min={0.1}
+            max={0.99}
+            onChange={(v) => update({ capture_repeat_iou: v })}
+            hint="How closely weak boxes must overlap before they count as repetitive evidence."
           />
           <NumberField
             label="Capture JPEG quality"
@@ -1213,7 +1383,7 @@ function Fields({
             min={0.01}
             max={0.99}
             onChange={(v) => update({ rescan_confidence: v })}
-            hint="The native crop gives small objects more pixels. Start around 0.15—usually above the full-frame capture threshold but below tracking confidence."
+            hint="Native crops give small objects more pixels, so this can usually be stricter than full-frame evidence capture. Use the trained model package recommendation when available."
           />
           <ModelClassField
             label="Rescan classes"
@@ -1798,7 +1968,11 @@ function suggestedCameraId(result: OnvifProfileResult, profile: OnvifProfile): s
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 55);
-  const hostSuffix = result.device.host.split('.').at(-1)?.replace(/[^a-z0-9]/gi, '') ?? '';
+  const hostSuffix =
+    result.device.host
+      .split('.')
+      .at(-1)
+      ?.replace(/[^a-z0-9]/gi, '') ?? '';
   return `${base || 'camera'}${hostSuffix ? `-${hostSuffix}` : ''}`.slice(0, 64);
 }
 
@@ -1906,9 +2080,9 @@ function CameraDiscoveryPanel({
                   : 'border-edge bg-panelalt hover:border-muted'
               }`}
               onClick={() => {
-              setXaddr(device.xaddr);
-              setResult(null);
-              setConnectionError(null);
+                setXaddr(device.xaddr);
+                setResult(null);
+                setConnectionError(null);
               }}
             >
               <span className="block font-medium">{device.name || device.host}</span>
@@ -1989,7 +2163,11 @@ function CameraDiscoveryPanel({
               <div>
                 <p className="text-sm font-medium">{profile.name}</p>
                 <p className="text-xs text-muted">
-                  {[profile.encoding, profile.width && profile.height ? `${profile.width}×${profile.height}` : '', profile.fps ? `${profile.fps} fps` : '']
+                  {[
+                    profile.encoding,
+                    profile.width && profile.height ? `${profile.width}×${profile.height}` : '',
+                    profile.fps ? `${profile.fps} fps` : '',
+                  ]
                     .filter(Boolean)
                     .join(' · ')}
                 </p>
@@ -2069,10 +2247,14 @@ function CameraFields({
 
       <div className="md:col-span-2 mb-5 rounded-xl border-2 border-accent/50 bg-accent/10 p-4 shadow-md shadow-black/20">
         <div className="mb-2 flex items-center gap-2">
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-accent/20 text-accent">◎</span>
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-accent/20 text-accent">
+            ◎
+          </span>
           <div>
             <h3 className="text-sm font-semibold text-ink">Primary camera</h3>
-            <p className="text-xs text-muted">Used for detection, tracking, zones and calibration.</p>
+            <p className="text-xs text-muted">
+              Used for detection, tracking, zones and calibration.
+            </p>
           </div>
         </div>
         <SelectField
@@ -2101,9 +2283,7 @@ function CameraFields({
           <CameraFieldScope key={index} source={source} index={index}>
             <article
               className={`md:col-span-2 mb-4 overflow-hidden rounded-xl border-2 shadow-lg shadow-black/20 ${
-                isPrimary
-                  ? 'border-accent/60 bg-accent/[0.04]'
-                  : 'border-edge bg-panelalt/35'
+                isPrimary ? 'border-accent/60 bg-accent/[0.04]' : 'border-edge bg-panelalt/35'
               }`}
             >
               <header className="flex flex-wrap items-center justify-between gap-3 border-b border-edge bg-panelalt/70 px-4 py-3">

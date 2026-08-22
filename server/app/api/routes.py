@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
+import shutil
 import time
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -41,6 +45,26 @@ ONVIF_PROFILE_TIMEOUT_S = 20.0
 DETECTOR_MODEL_UPLOAD_PATH = "/api/detector/models"
 MAX_MODEL_UPLOAD_BYTES = 512 * 1024 * 1024
 MODEL_FILENAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.pt", re.IGNORECASE)
+
+
+def _validate_model_profile(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("deployment.json must contain an object")
+    thresholds = raw.get("recommended_thresholds")
+    if not isinstance(thresholds, dict):
+        raise ValueError("deployment.json has no recommended_thresholds")
+    normalized: dict[str, float] = {}
+    for name in ("operational", "capture", "rescan"):
+        try:
+            value = float(thresholds[name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"deployment.json has no valid {name} threshold") from exc
+        if not 0.01 <= value <= 0.99:
+            raise ValueError(f"deployment {name} threshold must be between 0.01 and 0.99")
+        normalized[name] = value
+    profile = dict(raw)
+    profile["recommended_thresholds"] = normalized
+    return profile
 
 
 def _turret_error(exc: TurretError) -> HTTPException:
@@ -129,6 +153,7 @@ async def upload_detector_model(
         )
 
     temporary = models_dir / f".{filename}.{uuid4().hex}.upload"
+    extracted_model = models_dir / f".{filename}.{uuid4().hex}.model"
     size = 0
     digest = hashlib.sha256()
     prefix = bytearray()
@@ -157,19 +182,61 @@ async def upload_detector_model(
                 detail="file is not a modern PyTorch .pt checkpoint (ZIP signature missing)",
             )
 
+        model_source = temporary
+        profile: dict[str, Any] | None = None
+        try:
+            with zipfile.ZipFile(temporary) as archive:
+                names = set(archive.namelist())
+                if {"model.pt", "deployment.json"}.issubset(names):
+                    model_info = archive.getinfo("model.pt")
+                    manifest_info = archive.getinfo("deployment.json")
+                    if model_info.file_size > MAX_MODEL_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="packaged model exceeds the 512 MiB upload limit",
+                        )
+                    if manifest_info.file_size > 1024 * 1024:
+                        raise HTTPException(status_code=422, detail="deployment.json is too large")
+                    try:
+                        profile = _validate_model_profile(
+                            json.loads(archive.read("deployment.json").decode("utf-8"))
+                        )
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    with archive.open("model.pt") as source, extracted_model.open("xb") as output:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    model_source = extracted_model
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=422, detail="uploaded checkpoint is not a ZIP") from exc
+
+        with model_source.open("rb") as installed:
+            if installed.read(4) != b"PK\x03\x04":
+                raise HTTPException(
+                    status_code=422,
+                    detail="packaged model is not a modern PyTorch checkpoint",
+                )
+
         if overwrite:
-            os.replace(temporary, target)
+            os.replace(model_source, target)
         else:
             try:
-                os.link(temporary, target)
+                os.link(model_source, target)
             except FileExistsError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"{filename} was installed by another request; choose a different name",
                 ) from exc
-            temporary.unlink()
+            model_source.unlink()
+        profile_path = target.with_name(f"{target.name}.json")
+        if profile is not None:
+            profile_path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+        elif overwrite:
+            profile_path.unlink(missing_ok=True)
     finally:
         temporary.unlink(missing_ok=True)
+        extracted_model.unlink(missing_ok=True)
 
     await runtime.events.emit(
         ev.CAT_SYSTEM,
@@ -180,6 +247,7 @@ async def upload_detector_model(
         "filename": filename,
         "size_bytes": size,
         "sha256": digest.hexdigest(),
+        "profile": profile,
         "installed_models": runtime.installed_detector_models(),
     }
 
@@ -802,6 +870,12 @@ class DetectionAnnotationCreateRequest(BaseModel):
     class_name: str = Field(default="bird", min_length=1, max_length=128)
 
 
+class DetectionCaptureBulkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capture_ids: list[int] = Field(min_length=1, max_length=500)
+    action: Literal["reject", "delete"]
+
+
 @router.get("/detection-captures")
 async def list_detection_captures(
     runtime: RuntimeDep,
@@ -810,12 +884,24 @@ async def list_detection_captures(
     offset: int = Query(default=0, ge=0),
     review_status: Literal["unreviewed", "training", "rejected"] | None = None,
     class_name: str | None = Query(default=None, max_length=128),
+    model_name: str | None = Query(default=None, max_length=256),
+    trigger: Literal["detection", "manual", "motion-rescan"] | None = None,
+    min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    max_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    after: datetime | None = None,
+    before: datetime | None = None,
 ) -> list[dict[str, object]]:
     return await runtime.detection_captures.list(
         limit=limit,
         offset=offset,
         review_status=review_status,
         class_name=class_name,
+        model_name=model_name,
+        trigger=trigger,
+        min_confidence=min_confidence,
+        max_confidence=max_confidence,
+        after=after,
+        before=before,
     )
 
 
@@ -827,13 +913,37 @@ async def page_detection_captures(
     offset: int = Query(default=0, ge=0),
     review_status: Literal["unreviewed", "training", "rejected"] | None = None,
     class_name: str | None = Query(default=None, max_length=128),
+    model_name: str | None = Query(default=None, max_length=256),
+    trigger: Literal["detection", "manual", "motion-rescan"] | None = None,
+    min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    max_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    after: datetime | None = None,
+    before: datetime | None = None,
 ) -> dict[str, object]:
     return await runtime.detection_captures.page(
         limit=limit,
         offset=offset,
         review_status=review_status,
         class_name=class_name,
+        model_name=model_name,
+        trigger=trigger,
+        min_confidence=min_confidence,
+        max_confidence=max_confidence,
+        after=after,
+        before=before,
     )
+
+
+@router.post("/detection-captures/bulk")
+async def bulk_detection_captures(
+    payload: DetectionCaptureBulkRequest,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, int]:
+    try:
+        return await runtime.detection_captures.bulk_review(payload.capture_ids, payload.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/detection-captures/manual", status_code=status.HTTP_201_CREATED)
@@ -869,12 +979,24 @@ async def navigate_detection_captures(
     direction: Literal["current", "previous", "next"] = "current",
     review_status: Literal["unreviewed", "training", "rejected"] | None = None,
     class_name: str | None = Query(default=None, max_length=128),
+    model_name: str | None = Query(default=None, max_length=256),
+    trigger: Literal["detection", "manual", "motion-rescan"] | None = None,
+    min_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    max_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    after: datetime | None = None,
+    before: datetime | None = None,
 ) -> dict[str, object]:
     result = await runtime.detection_captures.navigate(
         capture_id,
         direction=direction,
         review_status=review_status,
         class_name=class_name,
+        model_name=model_name,
+        trigger=trigger,
+        min_confidence=min_confidence,
+        max_confidence=max_confidence,
+        after=after,
+        before=before,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="no matching detection capture")

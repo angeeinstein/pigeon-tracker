@@ -49,6 +49,8 @@ def runtime_for_test() -> Runtime:
     runtime.detection_captures = AsyncMock()
     runtime.settings_store = SimpleNamespace(current=AppSettings())
     runtime._detection_last_seen = {}
+    runtime._low_evidence_history = {}
+    runtime._low_evidence_suppressed = {}
     return runtime
 
 
@@ -106,3 +108,32 @@ async def test_detection_image_is_saved_and_linked_from_event() -> None:
 
     runtime.detection_captures.create.assert_awaited_once()
     assert runtime.events.emit.await_args.kwargs["data"]["capture_id"] == 42
+
+
+async def test_repetitive_weak_evidence_is_suppressed_without_removing_detection() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    first = result_at(10.0, detection("bird", 0.2))
+    first.image = np.zeros((100, 160, 3), dtype=np.uint8)
+    repeated = result_at(20.0, detection("bird", 0.2))
+    repeated.image = first.image
+
+    await runtime._on_vision_result(first)
+    await runtime._on_vision_result(repeated)
+
+    runtime.detection_captures.create.assert_awaited_once()
+    assert repeated.detections, "operational pipeline data must remain untouched"
+
+
+async def test_operational_confidence_evidence_is_never_repeat_suppressed() -> None:
+    runtime = runtime_for_test()
+    runtime.detection_captures.create.return_value = {"id": 42}
+    first = result_at(10.0, detection("bird", 0.8))
+    first.image = np.zeros((100, 160, 3), dtype=np.uint8)
+    repeated = result_at(20.0, detection("bird", 0.8))
+    repeated.image = first.image
+
+    await runtime._on_vision_result(first)
+    await runtime._on_vision_result(repeated)
+
+    assert runtime.detection_captures.create.await_count == 2

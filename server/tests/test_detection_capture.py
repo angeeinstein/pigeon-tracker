@@ -104,6 +104,43 @@ async def test_rejecting_last_box_completes_negative_capture(
     assert completed["detections"][0]["review_status"] == "rejected"  # type: ignore[index]
 
 
+async def test_capture_filters_and_bulk_review(temp_database: Path, tmp_path: Path) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    first = await store.create(
+        image=np.zeros((120, 160, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=1,
+        detections=[proposal("bird", 0.12, 0)],
+        class_name="bird",
+        confidence=0.12,
+        model_name="noisy.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+    second = await store.create(
+        image=np.zeros((120, 160, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=2,
+        detections=[proposal("bird", 0.8, 0)],
+        class_name="bird",
+        confidence=0.8,
+        model_name="strong.pt",
+        detector_settings={},
+        jpeg_quality=80,
+        trigger="motion-rescan",
+    )
+
+    page = await store.page(model_name="noisy.pt", max_confidence=0.2)
+    assert [item["id"] for item in page["items"]] == [first["id"]]  # type: ignore[index]
+    motion = await store.page(trigger="motion-rescan", min_confidence=0.5)
+    assert [item["id"] for item in motion["items"]] == [second["id"]]  # type: ignore[index]
+
+    result = await store.bulk_review([int(first["id"]), int(second["id"])], "reject")
+    assert result == {"affected": 2}
+    rejected = await store.page(review_status="rejected")
+    assert rejected["total"] == 2
+
+
 async def test_motion_rescan_source_is_preserved_for_review(
     temp_database: Path, tmp_path: Path
 ) -> None:
@@ -244,3 +281,4 @@ def test_dataset_split_keeps_adjacent_camera_frames_together() -> None:
 
     assert splits[1] == splits[2]
     assert set(splits.values()) == {"train", "val"}
+    assert splits[3] == "val"

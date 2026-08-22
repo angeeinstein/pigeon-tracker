@@ -421,16 +421,21 @@ class VisionPipeline:
         best_class_name = ""
         elapsed_ms = 0.0
 
-        for region in regions:
-            x1, y1, x2, y2 = _native_crop_bounds(
-                region,
-                display_width=frame.width,
-                display_height=frame.height,
-                native_width=int(native.shape[1]),
-                native_height=int(native.shape[0]),
-                padding_ratio=cfg.crop_padding_ratio,
-                min_width_ratio=cfg.min_crop_width_ratio,
-            )
+        crop_bounds = _merge_crop_bounds(
+            [
+                _native_crop_bounds(
+                    region,
+                    display_width=frame.width,
+                    display_height=frame.height,
+                    native_width=int(native.shape[1]),
+                    native_height=int(native.shape[0]),
+                    padding_ratio=cfg.crop_padding_ratio,
+                    min_width_ratio=cfg.min_crop_width_ratio,
+                )
+                for region in regions
+            ]
+        )
+        for x1, y1, x2, y2 in crop_bounds:
             crop = native[y1:y2, x1:x2]
             if crop.size == 0:
                 continue
@@ -464,6 +469,11 @@ class VisionPipeline:
 
         if not evidence_boxes:
             return None
+        # Ultralytics applies NMS inside each crop. Overlapping motion crops
+        # still need one final pass after their boxes share native coordinates.
+        evidence_boxes = _deduplicate_detections(
+            evidence_boxes, self._settings.detector.iou
+        )[: self._settings.detector.max_detections]
         return MotionEvidence(
             image=native,
             detections=evidence_boxes,
@@ -504,6 +514,75 @@ def _tracks_from_detections(detections: list[Detection], now: float) -> list[Tra
         )
         for index, d in enumerate(detections)
     ]
+
+
+def _detection_iou(left: Detection, right: Detection) -> float:
+    x1 = max(left.x1, right.x1)
+    y1 = max(left.y1, right.y1)
+    x2 = min(left.x2, right.x2)
+    y2 = min(left.y2, right.y2)
+    overlap = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = left.area + right.area - overlap
+    return overlap / union if union > 0.0 else 0.0
+
+
+def _deduplicate_detections(
+    detections: list[Detection], iou_threshold: float
+) -> list[Detection]:
+    """Class-aware NMS for boxes produced by separate motion crops."""
+    kept: list[Detection] = []
+    for candidate in sorted(detections, key=lambda item: item.confidence, reverse=True):
+        duplicate = any(
+            candidate.class_name.casefold() == existing.class_name.casefold()
+            and _detection_iou(candidate, existing) >= iou_threshold
+            for existing in kept
+        )
+        if not duplicate:
+            kept.append(candidate)
+    return kept
+
+
+def _merge_crop_bounds(
+    bounds: list[tuple[int, int, int, int]],
+    overlap_threshold: float = 0.5,
+) -> list[tuple[int, int, int, int]]:
+    """Merge motion crops that substantially cover the same native pixels.
+
+    Motion components can fragment one moving bird into several nearby regions.
+    Padding those regions often creates nearly identical model inputs. Merging
+    only when at least half of the smaller crop overlaps avoids redundant
+    inference without combining separate objects that merely sit close by.
+    """
+    merged: list[tuple[int, int, int, int]] = []
+    for candidate in bounds:
+        current = candidate
+        index = 0
+        while index < len(merged):
+            existing = merged[index]
+            x1 = max(current[0], existing[0])
+            y1 = max(current[1], existing[1])
+            x2 = min(current[2], existing[2])
+            y2 = min(current[3], existing[3])
+            intersection = max(0, x2 - x1) * max(0, y2 - y1)
+            current_area = max(1, current[2] - current[0]) * max(
+                1, current[3] - current[1]
+            )
+            existing_area = max(1, existing[2] - existing[0]) * max(
+                1, existing[3] - existing[1]
+            )
+            if intersection / min(current_area, existing_area) >= overlap_threshold:
+                current = (
+                    min(current[0], existing[0]),
+                    min(current[1], existing[1]),
+                    max(current[2], existing[2]),
+                    max(current[3], existing[3]),
+                )
+                merged.pop(index)
+                index = 0
+                continue
+            index += 1
+        merged.append(current)
+    return merged
 
 
 def _motion_region_has_detection(

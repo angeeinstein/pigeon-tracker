@@ -38,9 +38,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const controller = timeoutMs ? new AbortController() : null;
-  const timeout = controller
-    ? window.setTimeout(() => controller.abort(), timeoutMs)
-    : undefined;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : undefined;
   let response: Response;
   try {
     response = await fetch(path, {
@@ -158,7 +156,8 @@ export const api = {
     post<unknown>('/api/control/move_relative', { pan_delta_deg, tilt_delta_deg, speed_deg_s }),
   jog: (pan: number, tilt: number) => post<unknown>('/api/control/jog', { pan, tilt }),
   stop: () => post<unknown>('/api/control/stop'),
-  spray: (duration_ms?: number) => post<{ duration_ms: number }>('/api/control/spray', { duration_ms }),
+  spray: (duration_ms?: number) =>
+    post<{ duration_ms: number }>('/api/control/spray', { duration_ms }),
   sprayStop: () => post<unknown>('/api/control/spray/stop'),
   aim: (x: number, y: number, surface?: string) =>
     post<{ pan_deg: number; tilt_deg: number; extrapolated: boolean }>('/api/control/aim', {
@@ -180,7 +179,8 @@ export const api = {
   }) => post<CalibrationPoint>('/api/calibration/points', body),
   deleteCalibrationPoint: (id: number) =>
     request<void>(`/api/calibration/points/${id}`, { method: 'DELETE' }),
-  clearCalibration: () => request<{ removed: number }>('/api/calibration/points', { method: 'DELETE' }),
+  clearCalibration: () =>
+    request<{ removed: number }>('/api/calibration/points', { method: 'DELETE' }),
   calibrationModel: () =>
     request<{ camera_id: string; calibrated: boolean; strategy: string; surfaces: unknown[] }>(
       '/api/calibration/model',
@@ -235,6 +235,12 @@ export const api = {
       offset?: number;
       review_status?: DetectionReviewStatus;
       class_name?: string;
+      model_name?: string;
+      trigger?: 'detection' | 'manual' | 'motion-rescan';
+      min_confidence?: number;
+      max_confidence?: number;
+      after?: string;
+      before?: string;
     } = {},
   ) => {
     const query = new URLSearchParams();
@@ -242,26 +248,52 @@ export const api = {
     if (params.offset) query.set('offset', String(params.offset));
     if (params.review_status) query.set('review_status', params.review_status);
     if (params.class_name) query.set('class_name', params.class_name);
+    if (params.model_name) query.set('model_name', params.model_name);
+    if (params.trigger) query.set('trigger', params.trigger);
+    if (params.min_confidence !== undefined)
+      query.set('min_confidence', String(params.min_confidence));
+    if (params.max_confidence !== undefined)
+      query.set('max_confidence', String(params.max_confidence));
+    if (params.after) query.set('after', params.after);
+    if (params.before) query.set('before', params.before);
     return request<DetectionCapturePage>(`/api/detection-captures/page?${query.toString()}`);
   },
   navigateDetectionCaptures: (
     captureId: number,
     direction: 'current' | 'previous' | 'next',
-    params: { review_status?: DetectionReviewStatus; class_name?: string } = {},
+    params: {
+      review_status?: DetectionReviewStatus;
+      class_name?: string;
+      model_name?: string;
+      trigger?: 'detection' | 'manual' | 'motion-rescan';
+      min_confidence?: number;
+      max_confidence?: number;
+      after?: string;
+      before?: string;
+    } = {},
   ) => {
     const query = new URLSearchParams({ direction });
     if (params.review_status) query.set('review_status', params.review_status);
     if (params.class_name) query.set('class_name', params.class_name);
+    if (params.model_name) query.set('model_name', params.model_name);
+    if (params.trigger) query.set('trigger', params.trigger);
+    if (params.min_confidence !== undefined)
+      query.set('min_confidence', String(params.min_confidence));
+    if (params.max_confidence !== undefined)
+      query.set('max_confidence', String(params.max_confidence));
+    if (params.after) query.set('after', params.after);
+    if (params.before) query.set('before', params.before);
     return request<DetectionCaptureNavigation>(
       `/api/detection-captures/${captureId}/navigate?${query.toString()}`,
     );
   },
   saveDetectionCapture: () => post<DetectionCapture>('/api/detection-captures/manual'),
-  reviewDetectionCapture: (
-    id: number,
-    review_status: DetectionReviewStatus,
-    review_label = '',
-  ) =>
+  bulkDetectionCaptures: (captureIds: number[], action: 'reject' | 'delete') =>
+    post<{ affected: number }>('/api/detection-captures/bulk', {
+      capture_ids: captureIds,
+      action,
+    }),
+  reviewDetectionCapture: (id: number, review_status: DetectionReviewStatus, review_label = '') =>
     request<DetectionCapture>(`/api/detection-captures/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({ review_status, review_label }),
@@ -294,9 +326,7 @@ export const api = {
       { method: 'DELETE' },
     ),
   rejectUnreviewedDetectionAnnotations: (captureId: number) =>
-    post<DetectionCapture>(
-      `/api/detection-captures/${captureId}/annotations/reject-unreviewed`,
-    ),
+    post<DetectionCapture>(`/api/detection-captures/${captureId}/annotations/reject-unreviewed`),
   downloadDetectionDataset: () => download('/api/detection-captures/export/yolo.zip'),
   deleteDetectionCapture: (id: number) =>
     request<void>(`/api/detection-captures/${id}`, { method: 'DELETE' }),

@@ -150,7 +150,10 @@ class TestSettings:
     def test_detector_model_upload_is_validated_and_listed(self, client: TestClient) -> None:
         # Deliberately cross the normal 16 KiB JSON request limit. Model
         # uploads are streamed and have their own 512 MiB limit.
-        checkpoint = b"PK\x03\x04" + b"x" * (20 * 1024)
+        checkpoint_buffer = io.BytesIO()
+        with zipfile.ZipFile(checkpoint_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("archive/data.pkl", b"x" * (20 * 1024))
+        checkpoint = checkpoint_buffer.getvalue()
         uploaded = client.post(
             "/api/detector/models?filename=pigeon-v1.pt",
             content=checkpoint,
@@ -178,6 +181,42 @@ class TestSettings:
             content=checkpoint,
         )
         assert traversal.status_code == 422
+
+    def test_detector_deployment_package_installs_threshold_profile(
+        self, client: TestClient
+    ) -> None:
+        model_buffer = io.BytesIO()
+        with zipfile.ZipFile(model_buffer, "w") as archive:
+            archive.writestr("archive/data.pkl", b"checkpoint")
+        profile = {
+            "format_version": 1,
+            "model": "best.pt",
+            "created_at": "2026-08-22T12:00:00Z",
+            "recommended_thresholds": {
+                "operational": 0.4,
+                "capture": 0.25,
+                "rescan": 0.45,
+            },
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("model.pt", model_buffer.getvalue())
+            archive.writestr("deployment.json", json.dumps(profile))
+
+        uploaded = client.post(
+            "/api/detector/models?filename=profiled.pt",
+            content=package.getvalue(),
+            headers={"Content-Type": "application/zip"},
+        )
+
+        assert uploaded.status_code == 200
+        assert uploaded.json()["profile"]["recommended_thresholds"]["capture"] == 0.25
+        catalog = client.get("/api/detector/catalog").json()
+        assert catalog["model_profiles"]["profiled.pt"]["recommended_thresholds"] == {
+            "operational": 0.4,
+            "capture": 0.25,
+            "rescan": 0.45,
+        }
 
 
 class TestCameraOnboarding:

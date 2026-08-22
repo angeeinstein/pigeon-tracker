@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from 'react';
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { api } from '../api/client';
 import type {
   DetectionAnnotationStatus,
@@ -14,6 +9,7 @@ import { Banner, Card, Pill, Spinner } from '../components/ui';
 import { useAsync } from '../hooks/useAsync';
 
 type StatusFilter = '' | DetectionReviewStatus;
+type TriggerFilter = '' | 'detection' | 'manual' | 'motion-rescan';
 type Point = [number, number];
 const PAGE_SIZE = 60;
 
@@ -32,6 +28,13 @@ const BOX_COLOUR: Record<DetectionAnnotationStatus, string> = {
 export default function Detections() {
   const [status, setStatus] = useState<StatusFilter>('unreviewed');
   const [className, setClassName] = useState('');
+  const [modelName, setModelName] = useState('');
+  const [trigger, setTrigger] = useState<TriggerFilter>('');
+  const [minConfidence, setMinConfidence] = useState('');
+  const [maxConfidence, setMaxConfidence] = useState('');
+  const [after, setAfter] = useState('');
+  const [before, setBefore] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<number | 'manual' | 'export' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pageOffset, setPageOffset] = useState(0);
@@ -47,8 +50,24 @@ export default function Detections() {
         offset: pageOffset,
         review_status: status || undefined,
         class_name: className.trim() || undefined,
+        model_name: modelName.trim() || undefined,
+        trigger: trigger || undefined,
+        min_confidence: minConfidence === '' ? undefined : Number(minConfidence),
+        max_confidence: maxConfidence === '' ? undefined : Number(maxConfidence),
+        after: after ? new Date(after).toISOString() : undefined,
+        before: before ? new Date(before).toISOString() : undefined,
       }),
-    [status, className, pageOffset],
+    [
+      status,
+      className,
+      modelName,
+      trigger,
+      minConfidence,
+      maxConfidence,
+      after,
+      before,
+      pageOffset,
+    ],
   );
 
   useEffect(() => {
@@ -61,7 +80,21 @@ export default function Detections() {
 
   useEffect(() => {
     setPageOffset(0);
-  }, [status, className]);
+    setSelectedIds(new Set());
+  }, [status, className, modelName, trigger, minConfidence, maxConfidence, after, before]);
+
+  useEffect(() => setSelectedIds(new Set()), [pageOffset]);
+
+  const navigationFilters = {
+    review_status: status || undefined,
+    class_name: className.trim() || undefined,
+    model_name: modelName.trim() || undefined,
+    trigger: trigger || undefined,
+    min_confidence: minConfidence === '' ? undefined : Number(minConfidence),
+    max_confidence: maxConfidence === '' ? undefined : Number(maxConfidence),
+    after: after ? new Date(after).toISOString() : undefined,
+    before: before ? new Date(before).toISOString() : undefined,
+  };
 
   useEffect(() => {
     if (!captures.data || captures.data.items.length > 0 || pageOffset === 0) return;
@@ -91,10 +124,7 @@ export default function Detections() {
     try {
       const updated = await operation();
       setViewerCapture(updated);
-      const context = await api.navigateDetectionCaptures(updated.id, 'current', {
-        review_status: status || undefined,
-        class_name: className.trim() || undefined,
-      });
+      const context = await api.navigateDetectionCaptures(updated.id, 'current', navigationFilters);
       setViewerPosition(context.position);
       setViewerTotal(context.total);
       setViewerHasPrevious(context.has_previous);
@@ -158,10 +188,7 @@ export default function Detections() {
       const result = await api.navigateDetectionCaptures(
         viewerCapture.id,
         direction < 0 ? 'previous' : 'next',
-        {
-          review_status: status || undefined,
-          class_name: className.trim() || undefined,
-        },
+        navigationFilters,
       );
       setViewerCapture(result.capture);
       setViewerPosition(result.position);
@@ -184,6 +211,41 @@ export default function Detections() {
     setViewerTotal(total);
     setViewerHasPrevious(position > 1);
     setViewerHasNext(position < total);
+  }
+
+  async function bulkAction(action: 'reject' | 'delete') {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    const verb = action === 'delete' ? 'permanently delete' : 'mark as no bird';
+    if (!window.confirm(`${verb} ${ids.length} selected captures?`)) return;
+    setActionError(null);
+    try {
+      await api.bulkDetectionCaptures(ids, action);
+      setSelectedIds(new Set());
+      captures.reload();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function selectLikelyRepeats() {
+    const seen = new Set<string>();
+    const repeats = new Set<number>();
+    for (const capture of captures.data?.items ?? []) {
+      const strongest = [...capture.detections].sort(
+        (left, right) => (right.confidence ?? 0) - (left.confidence ?? 0),
+      )[0];
+      if (!strongest) continue;
+      const [x1, y1, x2, y2] = strongest.bbox;
+      const centerX = Math.floor(((x1 + x2) / 2 / capture.frame_width) * 12);
+      const centerY = Math.floor(((y1 + y2) / 2 / capture.frame_height) * 8);
+      const area = ((x2 - x1) * (y2 - y1)) / (capture.frame_width * capture.frame_height);
+      const areaBand = Math.round(Math.log2(Math.max(area, 0.00001)));
+      const signature = [capture.model_name, capture.trigger, centerX, centerY, areaBand].join('|');
+      if (seen.has(signature)) repeats.add(capture.id);
+      else seen.add(signature);
+    }
+    setSelectedIds(repeats);
   }
 
   return (
@@ -217,7 +279,7 @@ export default function Detections() {
           The viewer counter covers the complete filtered queue. In “needs box review,” completing
           an image removes it from that queue, so the next image may take the same position number.
         </p>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <select
             className="field max-w-[12rem]"
             value={status}
@@ -234,10 +296,99 @@ export default function Detections() {
             value={className}
             onChange={(event) => setClassName(event.target.value)}
           />
+          <input
+            className="field"
+            placeholder="filter model name"
+            value={modelName}
+            onChange={(event) => setModelName(event.target.value)}
+          />
+          <select
+            className="field"
+            value={trigger}
+            onChange={(event) => setTrigger(event.target.value as TriggerFilter)}
+          >
+            <option value="">all capture sources</option>
+            <option value="detection">full-frame detection</option>
+            <option value="motion-rescan">motion rescan</option>
+            <option value="manual">manual</option>
+          </select>
+          <input
+            className="field"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            placeholder="minimum confidence"
+            value={minConfidence}
+            onChange={(event) => setMinConfidence(event.target.value)}
+          />
+          <input
+            className="field"
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            placeholder="maximum confidence"
+            value={maxConfidence}
+            onChange={(event) => setMaxConfidence(event.target.value)}
+          />
+          <label className="text-xs text-muted">
+            From
+            <input
+              className="field mt-1"
+              type="datetime-local"
+              value={after}
+              onChange={(event) => setAfter(event.target.value)}
+            />
+          </label>
+          <label className="text-xs text-muted">
+            Until
+            <input
+              className="field mt-1"
+              type="datetime-local"
+              value={before}
+              onChange={(event) => setBefore(event.target.value)}
+            />
+          </label>
           <button className="btn px-3 py-1.5 text-xs" onClick={captures.reload}>
             Reload
           </button>
         </div>
+        {captures.data?.items.length ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-edge pt-3">
+            <button
+              className="btn px-3 py-1.5 text-xs"
+              onClick={() => setSelectedIds(new Set(captures.data!.items.map((item) => item.id)))}
+            >
+              Select page
+            </button>
+            <button className="btn px-3 py-1.5 text-xs" onClick={selectLikelyRepeats}>
+              Select likely repeats on page
+            </button>
+            <button
+              className="btn px-3 py-1.5 text-xs"
+              disabled={!selectedIds.size}
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear selection
+            </button>
+            <span className="text-xs text-muted">{selectedIds.size} selected</span>
+            <button
+              className="btn ml-auto px-3 py-1.5 text-xs"
+              disabled={!selectedIds.size}
+              onClick={() => void bulkAction('reject')}
+            >
+              Mark selected no bird
+            </button>
+            <button
+              className="btn px-3 py-1.5 text-xs text-bad"
+              disabled={!selectedIds.size}
+              onClick={() => void bulkAction('delete')}
+            >
+              Delete selected
+            </button>
+          </div>
+        ) : null}
       </Card>
 
       {(captures.error || actionError) && <Banner>{captures.error || actionError}</Banner>}
@@ -248,6 +399,15 @@ export default function Detections() {
           <CaptureCard
             key={capture.id}
             capture={capture}
+            selected={selectedIds.has(capture.id)}
+            onSelected={(selected) =>
+              setSelectedIds((current) => {
+                const next = new Set(current);
+                if (selected) next.add(capture.id);
+                else next.delete(capture.id);
+                return next;
+              })
+            }
             disabled={busy !== null}
             onOpen={() => openViewer(capture, index)}
             onDelete={() => act(capture.id, () => api.deleteDetectionCapture(capture.id))}
@@ -277,7 +437,9 @@ export default function Detections() {
           </span>
           <button
             className="btn px-3 py-1.5 text-xs"
-            disabled={pageOffset + captures.data.items.length >= captures.data.total || captures.loading}
+            disabled={
+              pageOffset + captures.data.items.length >= captures.data.total || captures.loading
+            }
             onClick={() => setPageOffset(pageOffset + PAGE_SIZE)}
           >
             Next page
@@ -326,11 +488,15 @@ export default function Detections() {
 
 function CaptureCard({
   capture,
+  selected,
+  onSelected,
   disabled,
   onOpen,
   onDelete,
 }: {
   capture: DetectionCapture;
+  selected: boolean;
+  onSelected: (selected: boolean) => void;
   disabled: boolean;
   onOpen: () => void;
   onDelete: () => void;
@@ -344,7 +510,21 @@ function CaptureCard({
       title={`${capture.class_name || 'unlabelled'} / ${
         capture.confidence === null ? 'manual' : capture.confidence.toFixed(2)
       }`}
-      actions={<Pill tone={STATUS_TONE[capture.review_status]}>{capture.review_status}</Pill>}
+      actions={
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={selected}
+              aria-label={`Select capture ${capture.id}`}
+              className="h-4 w-4 accent-accent"
+              onChange={(event) => onSelected(event.target.checked)}
+            />
+            Select
+          </label>
+          <Pill tone={STATUS_TONE[capture.review_status]}>{capture.review_status}</Pill>
+        </div>
+      }
     >
       <button
         type="button"
@@ -362,6 +542,9 @@ function CaptureCard({
 
       <div className="mt-3 space-y-1 text-xs text-muted">
         <p>{new Date(capture.ts).toLocaleString()}</p>
+        <p>
+          model={capture.model_name} / source={capture.trigger}
+        </p>
         <p>
           {reviewed}/{capture.detections.length} boxes reviewed / camera={capture.camera_id}
         </p>
@@ -451,10 +634,7 @@ function CaptureReviewer({
   onClose: () => void;
   onPrevious: () => void;
   onNext: () => void;
-  onReview: (
-    index: number,
-    status: DetectionAnnotationStatus,
-  ) => Promise<DetectionCapture | null>;
+  onReview: (index: number, status: DetectionAnnotationStatus) => Promise<DetectionCapture | null>;
   onAdd: (bbox: [number, number, number, number]) => Promise<DetectionCapture | null>;
   onDeleteAnnotation: (index: number) => Promise<DetectionCapture | null>;
   onRejectRemaining: () => Promise<DetectionCapture | null>;
@@ -495,8 +675,7 @@ function CaptureReviewer({
     const updated = await onReview(selectedIndex, status);
     if (!updated) return;
     const nextUnreviewed = updated.detections.findIndex(
-      (annotation, index) =>
-        index !== selectedIndex && annotation.review_status === 'unreviewed',
+      (annotation, index) => index !== selectedIndex && annotation.review_status === 'unreviewed',
     );
     if (nextUnreviewed >= 0) setSelectedIndex(nextUnreviewed);
     else if (status !== 'unreviewed' && updated.review_status !== 'unreviewed' && canNext) onNext();
@@ -517,8 +696,7 @@ function CaptureReviewer({
   function cycleBox(direction: -1 | 1) {
     if (!capture.detections.length) return;
     setSelectedIndex(
-      (current) =>
-        (current + direction + capture.detections.length) % capture.detections.length,
+      (current) => (current + direction + capture.detections.length) % capture.detections.length,
     );
   }
 
@@ -684,6 +862,9 @@ function CaptureReviewer({
                         className="pointer-events-none"
                       >
                         {index + 1} {annotation.class_name}
+                        {annotation.confidence === null
+                          ? ''
+                          : ` ${annotation.confidence.toFixed(2)}`}
                       </text>
                     </g>
                   );
@@ -710,8 +891,8 @@ function CaptureReviewer({
           {error && <Banner>{error}</Banner>}
           {legacyImageLabel && (
             <Banner tone="warn">
-              This capture has an older whole-image label. Review its individual boxes before it
-              can be exported.
+              This capture has an older whole-image label. Review its individual boxes before it can
+              be exported.
             </Banner>
           )}
           {selected ? (

@@ -92,6 +92,10 @@ class DetectorSettings(BaseModel):
     capture_enabled: bool = True
     #: The same class must disappear for this long before a new capture is made.
     capture_rearm_s: float = Field(default=5.0, ge=1.0, le=3600.0)
+    #: Repetitive evidence below the operational threshold may be saved less
+    #: often. This never changes detector output, tracking or targeting.
+    capture_repeat_s: float = Field(default=60.0, ge=5.0, le=3600.0)
+    capture_repeat_iou: float = Field(default=0.70, ge=0.1, le=0.99)
     capture_jpeg_quality: int = Field(default=90, ge=40, le=100)
     confidence: float = Field(default=0.35, ge=0.01, le=0.99)
     iou: float = Field(default=0.45, ge=0.05, le=0.95)

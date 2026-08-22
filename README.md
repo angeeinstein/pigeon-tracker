@@ -146,7 +146,9 @@ systemctl restart turret-control
 8. **Detections**: open a frame in the annotation viewer and review each model
    box as a correct bird or a false proposal. Keyboard shortcuts make it quick
    to move through boxes and frames. Draw a missing bird box on manual or
-   automatic captures, and mark bird-free frames as negative examples. Fully
+   automatic captures, and mark bird-free frames as negative examples. Filter
+   by model, source, confidence and time; select likely repetitive captures on
+   a page; and bulk-reject or bulk-delete an explicitly selected set. Fully
    reviewed positives are protected from retention. **Export YOLO dataset**
    downloads the reviewed JPEGs, YOLO labels, episode-aware train/validation
    split, dataset YAML, an audit manifest, and a self-contained Windows training
@@ -157,16 +159,21 @@ systemctl restart turret-control
    live epoch/batch metrics, elapsed time, estimated remaining time, GPU-memory
    use, settings guidance, cancellation and a direct link to the resulting
    `best.pt`. At completion it opens a report with precision, recall, mAP,
-   starting-model comparisons, the recommended checkpoint, training curves,
-   precision/recall/F1 confidence curves and confusion matrices. When NVIDIA
+   starting-model comparisons, fixed-threshold false-positive and recall
+   measurements, model-specific operational/capture/rescan recommendations,
+   training curves, threshold tradeoff graphs, precision/recall/F1 confidence
+   curves and confusion matrices. It also writes `pigeon-model.zip`, which
+   contains `best.pt` plus its validated deployment profile. When NVIDIA
    hardware is present, the launcher installs and
    verifies CUDA-enabled PyTorch and refuses to silently fall back to a
    CPU-only build. On Windows it leaves pinned loader memory disabled to avoid
    PyTorch driver-mapping failures; if parallel loading still fails, it
    automatically retries in safe loader mode and resumes a checkpoint when one
    exists. The GPU is used only while training is running.
-   Upload that checkpoint under **Settings → AI → Install a trained model**;
-   give it a versioned name, select it, then save all settings to load it.
+   Upload `pigeon-model.zip` under **Settings → AI → Install a trained model**;
+   give it a versioned name, accept its recommended thresholds, then save all
+   settings to load it. Raw `.pt` checkpoints remain supported but have no
+   model-specific threshold profile.
    Uploads are authenticated, limited to 512 MiB and installed atomically. An
    active model cannot be overwritten in place, so a failed new model load
    leaves the previous working detector available.

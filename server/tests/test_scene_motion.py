@@ -11,7 +11,13 @@ import pytest
 from app.camera.base import Frame
 from app.services.settings_schema import AppSettings, SceneMotionSettings
 from app.vision.detector import Detection
-from app.vision.pipeline import VisionPipeline, _motion_region_has_detection, _native_crop_bounds
+from app.vision.pipeline import (
+    VisionPipeline,
+    _deduplicate_detections,
+    _merge_crop_bounds,
+    _motion_region_has_detection,
+    _native_crop_bounds,
+)
 from app.vision.scene_motion import MotionRegion, SceneMotionDetector, _Event
 
 
@@ -140,6 +146,20 @@ def test_weak_full_frame_proposal_does_not_suppress_motion_rescan() -> None:
     assert _motion_region_has_detection(
         _region(), [strong], ["bird"], min_confidence=0.15
     )
+
+
+def test_motion_crop_results_are_deduplicated_after_mapping() -> None:
+    first = Detection(10, 10, 60, 60, 0.8, 0, "bird", "motion_rescan")
+    duplicate = Detection(12, 12, 61, 61, 0.6, 0, "bird", "motion_rescan")
+    distinct = Detection(100, 100, 130, 130, 0.7, 0, "bird", "motion_rescan")
+
+    assert _deduplicate_detections([duplicate, distinct, first], 0.45) == [first, distinct]
+
+
+def test_overlapping_motion_crops_are_merged_before_inference() -> None:
+    bounds = [(10, 10, 110, 110), (30, 20, 120, 100), (300, 300, 350, 350)]
+
+    assert _merge_crop_bounds(bounds) == [(10, 10, 120, 110), (300, 300, 350, 350)]
 
 
 def test_frame_exposes_native_image_without_changing_normal_image() -> None:

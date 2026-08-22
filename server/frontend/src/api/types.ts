@@ -150,13 +150,7 @@ export interface CalibrationPoint {
   created_at: string | null;
 }
 
-export type ZoneTypeName =
-  | 'active'
-  | 'no_target'
-  | 'no_spray'
-  | 'railing'
-  | 'planter'
-  | 'floor';
+export type ZoneTypeName = 'active' | 'no_target' | 'no_spray' | 'railing' | 'planter' | 'floor';
 
 export interface ZoneRecord {
   id: number;
@@ -230,6 +224,7 @@ export interface DetectorCatalog {
   model: string;
   classes: string[];
   installed_models: string[];
+  model_profiles: Record<string, DetectorModelProfile>;
   available_classes: string[];
   configured_backend: string;
   configured_model: string;
@@ -247,10 +242,25 @@ export interface DetectorCatalog {
   target_classes_excluded_by_detector: string[];
 }
 
+export interface DetectorThresholdProfile {
+  operational: number;
+  capture: number;
+  rescan: number;
+}
+
+export interface DetectorModelProfile {
+  format_version: number;
+  model: string;
+  created_at: string;
+  recommended_thresholds: DetectorThresholdProfile;
+  metrics?: Record<string, number>;
+}
+
 export interface DetectorModelUpload {
   filename: string;
   size_bytes: number;
   sha256: string;
+  profile: DetectorModelProfile | null;
   installed_models: string[];
 }
 
@@ -312,6 +322,8 @@ export interface Settings {
     capture_confidence: number;
     capture_enabled: boolean;
     capture_rearm_s: number;
+    capture_repeat_s: number;
+    capture_repeat_iou: number;
     capture_jpeg_quality: number;
     confidence: number;
     iou: number;

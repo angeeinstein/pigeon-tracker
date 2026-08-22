@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -186,6 +187,8 @@ METRIC_KEYS = {
     "map50_95": "metrics/mAP50-95(B)",
 }
 
+DEPLOYMENT_THRESHOLDS = (0.05, 0.10, 0.15, 0.20, 0.25, 0.35, 0.40, 0.45, 0.50, 0.60)
+
 
 def _numeric_metrics(raw: dict[str, Any]) -> dict[str, float]:
     metrics: dict[str, float] = {}
@@ -209,7 +212,27 @@ def _model_recommendation(
     baseline: dict[str, Any] | None,
     best_path: Path,
     starting_path: Path,
+    trained_sweep: dict[str, Any] | None = None,
+    baseline_sweep: dict[str, Any] | None = None,
 ) -> dict[str, str]:
+    trained_operating = _operating_point(trained_sweep)
+    baseline_operating = _operating_point(baseline_sweep)
+    if trained_operating and baseline_operating:
+        trained_is_safer = (
+            trained_operating["precision"] >= baseline_operating["precision"] - 0.02
+            and trained_operating["false_positive_image_rate"]
+            <= max(0.05, baseline_operating["false_positive_image_rate"] + 0.02)
+        )
+        trained_is_better = trained_operating["f1"] > baseline_operating["f1"]
+        if not (trained_is_safer and trained_is_better):
+            return {
+                "label": f"Keep the starting model ({starting_path.name})",
+                "path": str(starting_path),
+                "reason": (
+                    "The trained checkpoint did not improve the fixed-threshold bird result "
+                    "without increasing false positives on held-out negative images."
+                ),
+            }
     trained_fitness = _validation_fitness(trained)
     baseline_fitness = _validation_fitness(baseline or {})
     if (
@@ -232,6 +255,155 @@ def _model_recommendation(
         "path": str(best_path),
         "reason": comparison,
     }
+
+
+def _box_iou(left: list[float], right: list[float]) -> float:
+    x1 = max(left[0], right[0])
+    y1 = max(left[1], right[1])
+    x2 = min(left[2], right[2])
+    y2 = min(left[3], right[3])
+    overlap = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    left_area = max(0.0, left[2] - left[0]) * max(0.0, left[3] - left[1])
+    right_area = max(0.0, right[2] - right[0]) * max(0.0, right[3] - right[1])
+    union = left_area + right_area - overlap
+    return overlap / union if union > 0 else 0.0
+
+
+def _threshold_statistics(
+    samples: list[dict[str, Any]],
+    thresholds: tuple[float, ...] = DEPLOYMENT_THRESHOLDS,
+    *,
+    match_iou: float = 0.5,
+) -> dict[str, Any]:
+    """Measure deployed confidence behavior, including negative-frame noise."""
+    rows: list[dict[str, Any]] = []
+    positive_images = sum(bool(sample["targets"]) for sample in samples)
+    negative_images = len(samples) - positive_images
+    for threshold in thresholds:
+        true_positive = false_positive = false_negative = false_positive_images = 0
+        for sample in samples:
+            targets = [list(box) for box in sample["targets"]]
+            predictions = sorted(
+                (
+                    item
+                    for item in sample["predictions"]
+                    if float(item["confidence"]) >= threshold
+                ),
+                key=lambda item: float(item["confidence"]),
+                reverse=True,
+            )
+            unmatched = set(range(len(targets)))
+            image_false_positives = 0
+            for prediction in predictions:
+                box = list(prediction["bbox"])
+                matches = [
+                    (index, _box_iou(box, targets[index])) for index in unmatched
+                ]
+                best = max(matches, key=lambda item: item[1], default=None)
+                if best and best[1] >= match_iou:
+                    true_positive += 1
+                    unmatched.remove(best[0])
+                else:
+                    false_positive += 1
+                    image_false_positives += 1
+            false_negative += len(unmatched)
+            if not targets and image_false_positives:
+                false_positive_images += 1
+        precision = true_positive / max(1, true_positive + false_positive)
+        recall = true_positive / max(1, true_positive + false_negative)
+        f1 = 2 * precision * recall / max(1e-12, precision + recall)
+        rows.append(
+            {
+                "threshold": threshold,
+                "tp": true_positive,
+                "fp": false_positive,
+                "fn": false_negative,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "false_positive_images": false_positive_images,
+                "false_positive_image_rate": false_positive_images / max(1, negative_images),
+                "boxes_per_negative_image": false_positive / max(1, negative_images),
+            }
+        )
+    return {
+        "images": len(samples),
+        "positive_images": positive_images,
+        "negative_images": negative_images,
+        "thresholds": rows,
+        "recommended": _recommend_thresholds(rows),
+    }
+
+
+def _threshold_breakdowns(
+    samples: list[dict[str, Any]], sweep: dict[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    recommended = dict(sweep.get("recommended") or {})
+    threshold = _as_float(recommended.get("operational"))
+    if threshold is None:
+        return {}
+    breakdowns: dict[str, list[dict[str, Any]]] = {}
+    for dimension in ("camera", "day"):
+        groups = sorted({str(sample.get(dimension) or "") for sample in samples} - {""})
+        rows: list[dict[str, Any]] = []
+        for group in groups:
+            members = [sample for sample in samples if str(sample.get(dimension) or "") == group]
+            result = _threshold_statistics(members, (threshold,))["thresholds"][0]
+            rows.append({dimension: group, "images": len(members), **result})
+        if rows:
+            breakdowns[dimension] = rows
+    return breakdowns
+
+
+def _recommend_thresholds(rows: list[dict[str, Any]]) -> dict[str, float]:
+    if not rows:
+        return {"operational": 0.35, "capture": 0.25, "rescan": 0.40}
+    acceptable = [
+        row
+        for row in rows
+        if row["precision"] >= 0.90 and row["false_positive_image_rate"] <= 0.05
+    ]
+    operational = max(acceptable, key=lambda row: (row["recall"], row["f1"]), default=None)
+    if operational is None:
+        operational = max(rows, key=lambda row: (row["f1"], row["precision"]))
+    capture_candidates = [
+        row
+        for row in rows
+        if row["threshold"] <= operational["threshold"]
+        and row["precision"] >= 0.80
+        and row["false_positive_image_rate"] <= 0.01
+        and row["boxes_per_negative_image"] <= 0.03
+    ]
+    capture = min(
+        capture_candidates,
+        key=lambda row: row["threshold"],
+        default=operational,
+    )
+    return {
+        "operational": float(operational["threshold"]),
+        "capture": float(capture["threshold"]),
+        "rescan": min(
+            0.99,
+            max(float(operational["threshold"]), float(capture["threshold"]) + 0.10),
+        ),
+    }
+
+
+def _operating_point(sweep: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not sweep:
+        return None
+    recommended = dict(sweep.get("recommended") or {})
+    threshold = _as_float(recommended.get("operational"))
+    if threshold is None:
+        return None
+    return next(
+        (
+            row
+            for row in sweep.get("thresholds") or []
+            if abs(float(row["threshold"]) - threshold) < 1e-6
+        ),
+        None,
+    )
 
 
 def _training_history_summary(save_dir: Path) -> dict[str, Any]:
@@ -363,6 +535,220 @@ def _benchmark_starting_model(
     }
 
 
+def _validation_images(data_path: str) -> list[Path]:
+    from ultralytics.utils import YAML
+
+    yaml_path = Path(data_path).resolve()
+    config = YAML.load(yaml_path)
+    root = Path(str(config.get("path") or yaml_path.parent))
+    if not root.is_absolute():
+        root = (yaml_path.parent / root).resolve()
+    raw_val = config.get("val")
+    entries = raw_val if isinstance(raw_val, list) else [raw_val]
+    images: list[Path] = []
+    suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    for raw in entries:
+        if not raw:
+            continue
+        path = Path(str(raw))
+        if not path.is_absolute():
+            path = root / path
+        if path.is_dir():
+            images.extend(
+                item for item in sorted(path.rglob("*")) if item.suffix.casefold() in suffixes
+            )
+        elif path.suffix.casefold() == ".txt" and path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                candidate = Path(line.strip())
+                if not candidate.is_absolute():
+                    candidate = root / candidate
+                if candidate.is_file():
+                    images.append(candidate)
+        elif path.is_file():
+            images.append(path)
+    return images
+
+
+def _label_path_for_image(image: Path) -> Path:
+    parts = list(image.parts)
+    lowered = [part.casefold() for part in parts]
+    if "images" in lowered:
+        parts[lowered.index("images")] = "labels"
+        return Path(*parts).with_suffix(".txt")
+    return image.with_suffix(".txt")
+
+
+def _read_target_boxes(image: Path, width: int, height: int) -> list[list[float]]:
+    label = _label_path_for_image(image)
+    if not label.is_file():
+        return []
+    boxes: list[list[float]] = []
+    for line in label.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        center_x, center_y, box_width, box_height = map(float, fields[1:5])
+        boxes.append(
+            [
+                (center_x - box_width / 2) * width,
+                (center_y - box_height / 2) * height,
+                (center_x + box_width / 2) * width,
+                (center_y + box_height / 2) * height,
+            ]
+        )
+    return boxes
+
+
+def _threshold_sweep_model(
+    model_path: str,
+    data_path: str,
+    image_size: int,
+    device: str | int,
+    *,
+    progress_name: str,
+) -> dict[str, Any]:
+    """Predict validation images once, then score every deployment threshold."""
+    from ultralytics import YOLO
+
+    images = _validation_images(data_path)
+    if not images:
+        raise ValueError("No validation images were found for threshold evaluation.")
+    model = YOLO(model_path)
+    context: dict[str, dict[str, str]] = {}
+    manifest_path = Path(data_path).resolve().parent / "manifest.json"
+    with suppress(OSError, json.JSONDecodeError, TypeError):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for capture in manifest.get("captures") or []:
+            stem = f"capture-{int(capture['capture_id']):08d}"
+            context[stem] = {
+                "camera": str(capture.get("camera_id") or ""),
+                "day": str(capture.get("timestamp") or "")[:10],
+            }
+    names = dict(model.names)
+    bird_class = next(
+        (int(index) for index, name in names.items() if str(name).strip().casefold() == "bird"),
+        None,
+    )
+    if bird_class is None:
+        raise ValueError(f"{Path(model_path).name} has no class named bird.")
+    samples: list[dict[str, Any]] = []
+    results = model.predict(
+        source=[str(path) for path in images],
+        imgsz=image_size,
+        conf=min(DEPLOYMENT_THRESHOLDS),
+        iou=0.45,
+        device=device,
+        classes=[bird_class],
+        stream=True,
+        verbose=False,
+    )
+    for index, (image, result) in enumerate(zip(images, results, strict=False), start=1):
+        height, width = map(int, result.orig_shape)
+        predictions: list[dict[str, Any]] = []
+        boxes = getattr(result, "boxes", None)
+        if boxes is not None:
+            for xyxy, confidence in zip(
+                boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), strict=False
+            ):
+                predictions.append({"bbox": list(map(float, xyxy)), "confidence": confidence})
+        samples.append(
+            {
+                "image": str(image),
+                "targets": _read_target_boxes(image, width, height),
+                "predictions": predictions,
+                **context.get(image.stem, {}),
+            }
+        )
+        if index == len(images) or index % max(1, len(images) // 20) == 0:
+            _emit_worker(
+                "threshold_progress",
+                model=progress_name,
+                completed=index,
+                total=len(images),
+            )
+    sweep = _threshold_statistics(samples)
+    sweep["breakdowns"] = _threshold_breakdowns(samples, sweep)
+    sweep["model"] = Path(model_path).name
+    return sweep
+
+
+def _write_threshold_chart(save_dir: Path, sweep: dict[str, Any]) -> Path | None:
+    rows = list(sweep.get("thresholds") or [])
+    if not rows:
+        return None
+    import matplotlib.pyplot as plt
+
+    thresholds = [float(row["threshold"]) for row in rows]
+    figure, axis = plt.subplots(figsize=(10, 5.6))
+    axis.plot(
+        thresholds,
+        [row["precision"] for row in rows],
+        "o-",
+        color="#2563eb",
+        label="Precision",
+    )
+    axis.plot(
+        thresholds,
+        [row["recall"] for row in rows],
+        "s--",
+        color="#60a5fa",
+        label="Recall",
+    )
+    axis.plot(
+        thresholds,
+        [row["f1"] for row in rows],
+        "^-",
+        color="#1e3a8a",
+        linewidth=2.2,
+        label="F1",
+    )
+    axis.plot(
+        thresholds,
+        [row["false_positive_image_rate"] for row in rows],
+        "--",
+        color="#d97706",
+        label="Negative images with a false box",
+    )
+    recommended = dict(sweep.get("recommended") or {})
+    operational = _as_float(recommended.get("operational"))
+    if operational is not None:
+        axis.axvline(operational, color="#374151", linestyle=":", label="Recommended operational")
+    axis.set_title(
+        "Validation behavior by confidence threshold\n"
+        f"{int(sweep.get('positive_images', 0))} positive and "
+        f"{int(sweep.get('negative_images', 0))} negative held-out images"
+    )
+    axis.set_xlabel("Confidence threshold")
+    axis.set_ylabel("Rate")
+    axis.set_ylim(0, 1.02)
+    axis.grid(True, color="#d1d5db", alpha=0.55)
+    axis.legend(loc="best")
+    figure.tight_layout()
+    path = save_dir / "threshold_tradeoff.png"
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+    return path
+
+
+def _write_deployment_package(
+    save_dir: Path,
+    best: Path,
+    manifest: dict[str, Any],
+) -> tuple[Path, Path]:
+    manifest_path = save_dir / "deployment.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    package = save_dir / "pigeon-model.zip"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.write(best, "model.pt")
+        archive.write(manifest_path, "deployment.json")
+        archive.writestr(
+            "README.txt",
+            "Upload this complete ZIP in Settings > AI > Install a trained model. "
+            "It includes best.pt plus validated threshold recommendations.\n",
+        )
+    return manifest_path, package
+
+
 def _worker_train(config_path: Path) -> int:
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -492,7 +878,25 @@ def _worker_train(config_path: Path) -> int:
         last = Path(str(getattr(trainer, "last", save_dir / "weights" / "last.pt"))).resolve()
         history = _training_history_summary(save_dir)
         metrics = _numeric_metrics(dict(getattr(trainer, "metrics", {}) or {}))
+        trained_sweep: dict[str, Any] | None = None
+        threshold_error: str | None = None
+        try:
+            _emit_worker("threshold_start", model="best.pt")
+            trained_sweep = _threshold_sweep_model(
+                str(best),
+                str(config["data"]),
+                int(config["imgsz"]),
+                device,
+                progress_name="best.pt",
+            )
+            chart = _write_threshold_chart(save_dir, trained_sweep)
+            if chart is not None:
+                history["charts"].append(str(chart))
+        except Exception as exc:
+            threshold_error = _exception_text(exc)
+            _emit_worker("threshold_unavailable", model="best.pt", message=threshold_error)
         baseline: dict[str, Any] | None = None
+        baseline_sweep: dict[str, Any] | None = None
         baseline_error: str | None = None
         if config.get("benchmark", True):
             _emit_worker("benchmark_start", model=Path(str(config["model"])).name)
@@ -503,6 +907,13 @@ def _worker_train(config_path: Path) -> int:
                     int(config["imgsz"]),
                     device,
                     save_dir,
+                )
+                baseline_sweep = _threshold_sweep_model(
+                    str(config["model"]),
+                    str(config["data"]),
+                    int(config["imgsz"]),
+                    device,
+                    progress_name=Path(str(config["model"])).name,
                 )
                 _emit_worker("benchmark_complete", baseline=baseline)
             except Exception as exc:
@@ -516,6 +927,24 @@ def _worker_train(config_path: Path) -> int:
             baseline,
             best,
             starting_path.resolve(),
+            trained_sweep,
+            baseline_sweep,
+        )
+        deployment_manifest = {
+            "format_version": 1,
+            "model": best.name,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "metrics": metrics,
+            "baseline": baseline,
+            "threshold_evaluation": trained_sweep,
+            "baseline_threshold_evaluation": baseline_sweep,
+            "recommended_thresholds": (
+                dict(trained_sweep.get("recommended") or {}) if trained_sweep else {}
+            ),
+            "recommendation": recommendation,
+        }
+        deployment_manifest_path, deployment_package = _write_deployment_package(
+            save_dir, best, deployment_manifest
         )
         _emit_worker(
             "complete",
@@ -526,7 +955,12 @@ def _worker_train(config_path: Path) -> int:
             metrics=metrics,
             baseline=baseline,
             baseline_error=baseline_error,
+            trained_sweep=trained_sweep,
+            baseline_sweep=baseline_sweep,
+            threshold_error=threshold_error,
             recommendation=recommendation,
+            deployment_manifest=str(deployment_manifest_path),
+            deployment_package=str(deployment_package),
             requested_epochs=int(config["epochs"]),
             **history,
         )
@@ -1262,6 +1696,24 @@ class TrainerGui:
             self.status.configure(
                 text=f"Comparing with starting model {payload.get('model', '')}..."
             )
+        elif event == "threshold_start":
+            self.status.configure(
+                text=f"Testing deployment thresholds for {payload.get('model', '')}..."
+            )
+        elif event == "threshold_progress":
+            completed = int(payload.get("completed", 0) or 0)
+            total = max(1, int(payload.get("total", 1) or 1))
+            self.status.configure(
+                text=(
+                    f"Threshold test {payload.get('model', '')}: "
+                    f"{completed}/{total} validation images"
+                )
+            )
+        elif event == "threshold_unavailable":
+            self.log(
+                f"Threshold evaluation unavailable for {payload.get('model', '')}: "
+                f"{payload.get('message')}"
+            )
         elif event == "benchmark_complete":
             baseline = payload.get("baseline") or {}
             self.log(
@@ -1446,8 +1898,120 @@ class TrainerGui:
                 wraplength=1030,
             ).pack(anchor="w", pady=(0, 6))
 
+        trained_sweep = dict(report.get("trained_sweep") or {})
+        recommended_thresholds = dict(trained_sweep.get("recommended") or {})
+        if recommended_thresholds:
+            threshold_frame = self.ttk.LabelFrame(
+                outer, text="Recommended deployment thresholds", padding=9
+            )
+            threshold_frame.pack(fill="x", pady=(4, 8))
+            threshold_text = "   |   ".join(
+                (
+                    f"Operational {float(recommended_thresholds.get('operational', 0)):.2f}",
+                    f"Evidence capture {float(recommended_thresholds.get('capture', 0)):.2f}",
+                    f"Motion rescan {float(recommended_thresholds.get('rescan', 0)):.2f}",
+                )
+            )
+            self.ttk.Label(
+                threshold_frame, text=threshold_text, font=("Segoe UI", 11, "bold")
+            ).pack(anchor="w")
+            operating = _operating_point(trained_sweep)
+            if operating:
+                self.ttk.Label(
+                    threshold_frame,
+                    text=(
+                        f"At the recommended operational threshold: precision "
+                        f"{float(operating['precision']) * 100:.1f}%, recall "
+                        f"{float(operating['recall']) * 100:.1f}%, and "
+                        f"{float(operating['false_positive_image_rate']) * 100:.1f}% of held-out "
+                        "negative images produced a false box."
+                    ),
+                    wraplength=1030,
+                ).pack(anchor="w", pady=(3, 0))
+            package = str(report.get("deployment_package") or "")
+            if package:
+                self.ttk.Label(
+                    threshold_frame,
+                    text=f"Upload package: {package}",
+                    wraplength=1030,
+                ).pack(anchor="w", pady=(3, 0))
+
         notebook = self.ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True, pady=(4, 0))
+        threshold_rows = list(trained_sweep.get("thresholds") or [])
+        if threshold_rows:
+            table_tab = self.ttk.Frame(notebook, padding=8)
+            notebook.add(table_tab, text="Threshold table")
+            columns = ("threshold", "precision", "recall", "f1", "fp_images", "fp_boxes")
+            table = self.ttk.Treeview(table_tab, columns=columns, show="headings", height=10)
+            headings = {
+                "threshold": "Confidence",
+                "precision": "Precision",
+                "recall": "Recall",
+                "f1": "F1",
+                "fp_images": "Negative images with FP",
+                "fp_boxes": "FP boxes / negative image",
+            }
+            for name in columns:
+                table.heading(name, text=headings[name])
+                table.column(name, anchor="center", width=155)
+            for row in threshold_rows:
+                table.insert(
+                    "",
+                    "end",
+                    values=(
+                        f"{float(row['threshold']):.2f}",
+                        f"{float(row['precision']) * 100:.1f}%",
+                        f"{float(row['recall']) * 100:.1f}%",
+                        f"{float(row['f1']) * 100:.1f}%",
+                        (
+                            f"{int(row['false_positive_images'])} "
+                            f"({float(row['false_positive_image_rate']) * 100:.1f}%)"
+                        ),
+                        f"{float(row['boxes_per_negative_image']):.3f}",
+                    ),
+                )
+            table.pack(fill="both", expand=True)
+            self.ttk.Label(
+                table_tab,
+                text=(
+                    f"Validation: {int(trained_sweep.get('positive_images', 0))} positive and "
+                    f"{int(trained_sweep.get('negative_images', 0))} negative images. "
+                    "False-positive image rate is a deployment guardrail, not part of mAP."
+                ),
+                wraplength=1030,
+            ).pack(anchor="w", pady=(6, 0))
+
+        day_rows = list(dict(trained_sweep.get("breakdowns") or {}).get("day") or [])
+        if day_rows:
+            day_tab = self.ttk.Frame(notebook, padding=8)
+            notebook.add(day_tab, text="Results by day")
+            day_columns = ("day", "images", "precision", "recall", "fp_images")
+            day_table = self.ttk.Treeview(
+                day_tab, columns=day_columns, show="headings", height=10
+            )
+            for name, label in (
+                ("day", "Day"),
+                ("images", "Images"),
+                ("precision", "Precision"),
+                ("recall", "Recall"),
+                ("fp_images", "Negative images with FP"),
+            ):
+                day_table.heading(name, text=label)
+                day_table.column(name, anchor="center", width=180)
+            for row in day_rows:
+                day_table.insert(
+                    "",
+                    "end",
+                    values=(
+                        row["day"],
+                        int(row["images"]),
+                        f"{float(row['precision']) * 100:.1f}%",
+                        f"{float(row['recall']) * 100:.1f}%",
+                        int(row["false_positive_images"]),
+                    ),
+                )
+            day_table.pack(fill="both", expand=True)
         chart_titles = {
             "results.png": "Training curves",
             "BoxPR_curve.png": "Precision-recall",
@@ -1456,6 +2020,7 @@ class TrainerGui:
             "BoxR_curve.png": "Recall vs confidence",
             "confusion_matrix_normalized.png": "Normalized confusion matrix",
             "confusion_matrix.png": "Confusion matrix",
+            "threshold_tradeoff.png": "Deployment thresholds",
         }
         image_references: list[Any] = []
         for raw_path in report.get("charts") or []:

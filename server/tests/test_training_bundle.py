@@ -88,6 +88,80 @@ def test_recommendation_uses_model_with_stronger_validation(
     assert recommendation["path"] == str(starting)
 
 
+def test_threshold_sweep_exposes_negative_image_false_positives(
+    trainer_module: ModuleType,
+) -> None:
+    samples = [
+        {
+            "targets": [[10, 10, 30, 30]],
+            "predictions": [
+                {"bbox": [10, 10, 30, 30], "confidence": 0.8},
+                {"bbox": [50, 50, 60, 60], "confidence": 0.2},
+            ],
+        },
+        {
+            "targets": [],
+            "predictions": [{"bbox": [5, 5, 15, 15], "confidence": 0.1}],
+        },
+    ]
+
+    sweep = trainer_module._threshold_statistics(samples)
+    low = sweep["thresholds"][0]
+    operational = next(
+        row for row in sweep["thresholds"] if row["threshold"] == 0.35
+    )
+
+    assert low["false_positive_images"] == 1
+    assert low["fp"] == 2
+    assert operational["precision"] == 1.0
+    assert operational["recall"] == 1.0
+    assert sweep["recommended"] == {
+        "operational": 0.25,
+        "capture": 0.25,
+        "rescan": 0.35,
+    }
+
+
+def test_recommendation_rejects_noisy_trained_operating_point(
+    trainer_module: ModuleType, tmp_path: Path
+) -> None:
+    trained_sweep = {
+        "recommended": {"operational": 0.35},
+        "thresholds": [
+            {
+                "threshold": 0.35,
+                "precision": 0.7,
+                "recall": 0.9,
+                "f1": 0.79,
+                "false_positive_image_rate": 0.3,
+            }
+        ],
+    }
+    baseline_sweep = {
+        "recommended": {"operational": 0.35},
+        "thresholds": [
+            {
+                "threshold": 0.35,
+                "precision": 0.9,
+                "recall": 0.6,
+                "f1": 0.72,
+                "false_positive_image_rate": 0.03,
+            }
+        ],
+    }
+
+    recommendation = trainer_module._model_recommendation(
+        {"map50": 0.9, "map50_95": 0.7},
+        {"map50": 0.5, "map50_95": 0.4},
+        tmp_path / "best.pt",
+        tmp_path / "yolov8n.pt",
+        trained_sweep,
+        baseline_sweep,
+    )
+
+    assert recommendation["label"] == "Keep the starting model (yolov8n.pt)"
+
+
 def test_nvidia_smi_output_is_parsed(
     trainer_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
