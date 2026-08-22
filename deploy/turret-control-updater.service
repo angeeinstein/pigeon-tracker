@@ -1,0 +1,23 @@
+[Unit]
+Description=Update turret-control from its configured Git repository
+Documentation=https://github.com/angeeinstein/pigeon-tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/
+ExecStart=/usr/local/libexec/turret-control-web-update
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turret-control-updater
+
+# This unit intentionally has the privileges needed by install.sh. The web
+# service can only ask systemd to start this fixed unit; it cannot pass command
+# arguments or execute arbitrary privileged commands.

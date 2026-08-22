@@ -62,6 +62,16 @@ class TestHealth:
         payload = client.get("/api/system").json()
         assert "paths" in payload and "gpu" in payload
 
+    def test_web_update_status_and_confirmation_are_guarded(self, client: TestClient) -> None:
+        status_response = client.get("/api/system/update")
+        assert status_response.status_code == 200
+        assert "version_check" in status_response.json()
+
+        assert client.post("/api/system/update", json={"confirmation": "yes"}).status_code == 422
+        unavailable = client.post("/api/system/update", json={"confirmation": "UPDATE"})
+        assert unavailable.status_code == 503
+        assert "shell updater once" in unavailable.json()["detail"]
+
     def test_scene_motion_mask_is_available_without_replacing_preview(
         self, client: TestClient
     ) -> None:

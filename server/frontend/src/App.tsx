@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { api } from './api/client';
 import { Pill } from './components/ui';
@@ -69,6 +70,30 @@ function Shell() {
 function TopBar() {
   const { telemetry, connected } = useLive();
   const { attempt } = useToast();
+  const update = useAsync(() => api.systemUpdateOverview(), []);
+  const updateRunning = ['starting', 'checking', 'updating', 'restarting', 'verifying'].includes(
+    update.data?.state ?? '',
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(update.reload, updateRunning ? 2_000 : 15_000);
+    return () => window.clearInterval(timer);
+    // `reload` deliberately changes identity; polling cadence depends on state only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateRunning]);
+
+  useEffect(() => {
+    if (!window.sessionStorage.getItem('turret-update-requested')) return;
+    if (update.data?.state === 'failed') {
+      window.sessionStorage.removeItem('turret-update-requested');
+      return;
+    }
+    if (update.data?.state !== 'succeeded') return;
+    window.sessionStorage.removeItem('turret-update-requested');
+    const refreshed = new URL(window.location.href);
+    refreshed.searchParams.set('updated', Date.now().toString());
+    window.location.replace(`${refreshed.pathname}${refreshed.search}${refreshed.hash}`);
+  }, [update.data?.state]);
 
   return (
     <header className="sticky top-0 z-30 -mx-3 mb-1 border-b border-edge bg-[#0f1115]/95 px-3 py-2 backdrop-blur sm:-mx-5 sm:px-5">
@@ -87,7 +112,16 @@ function TopBar() {
                 }`
               }
             >
-              {item.label}
+              <span className="inline-flex items-center gap-1.5">
+                {item.label}
+                {item.to === '/system' && update.data?.version_check.update_available ? (
+                  <span
+                    className="h-2 w-2 rounded-full bg-warn shadow-[0_0_0_3px_rgba(247,185,85,0.12)]"
+                    title="Server update available"
+                    aria-label="Server update available"
+                  />
+                ) : null}
+              </span>
             </NavLink>
           ))}
         </nav>

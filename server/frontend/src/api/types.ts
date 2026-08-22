@@ -6,6 +6,53 @@ export interface VersionInfo {
   git_commit: string;
 }
 
+export type SystemUpdateState =
+  | 'idle'
+  | 'starting'
+  | 'checking'
+  | 'updating'
+  | 'restarting'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed';
+
+export interface SystemVersionCheck {
+  supported: boolean;
+  checking: boolean;
+  update_available: boolean | null;
+  current_commit: string | null;
+  latest_commit: string | null;
+  branch: string | null;
+  repository: string | null;
+  checked_at: string | null;
+  check_error: string | null;
+  check_interval_s: number;
+}
+
+export interface SystemUpdateStatus {
+  state: SystemUpdateState;
+  phase: string;
+  progress: number;
+  message: string;
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  current_commit: string | null;
+  target_commit: string | null;
+  installed_commit: string | null;
+  exit_code: number | null;
+  log_tail: string[];
+  updater_available: boolean;
+  permission_mode: string;
+  version_check: SystemVersionCheck;
+}
+
+export interface SystemUpdateOverview {
+  state: SystemUpdateState;
+  updater_available: boolean;
+  version_check: SystemVersionCheck;
+}
+
 export interface TrackView {
   track_id: number;
   bbox: [number, number, number, number];

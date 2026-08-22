@@ -22,6 +22,8 @@ import type {
   Preset,
   Settings,
   SettingsSection,
+  SystemUpdateStatus,
+  SystemUpdateOverview,
   ZoneRecord,
   ZoneTypeName,
 } from './types';
@@ -108,6 +110,11 @@ async function download(path: string): Promise<{ blob: Blob; filename: string }>
 export const api = {
   health: () => request<Health>('/api/health'),
   system: () => request<Record<string, unknown>>('/api/system'),
+  systemUpdateOverview: () => request<SystemUpdateOverview>('/api/system/update/overview'),
+  systemUpdateStatus: () => request<SystemUpdateStatus>('/api/system/update'),
+  checkSystemUpdate: () => post<SystemUpdateStatus>('/api/system/update/check'),
+  startSystemUpdate: () =>
+    post<SystemUpdateStatus>('/api/system/update', { confirmation: 'UPDATE' }),
   detectorCatalog: () => request<DetectorCatalog>('/api/detector/catalog'),
   uploadDetectorModel: (file: File, filename: string, overwrite = false) =>
     request<DetectorModelUpload>(

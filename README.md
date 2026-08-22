@@ -70,6 +70,15 @@ turret-update --uninstall                      # keep data/config/backups
 turret-update --uninstall --purge              # delete all project-owned state
 ```
 
+After this release has been installed once from the shell, **System â†’ Server
+update** handles later updates from the web interface. The server checks the
+configured Git branch every five minutes and shows an indicator when its remote
+commit changes. Starting an update disarms the turret, streams installer output
+and phase progress, survives the application restart, verifies the actual HTTP
+endpoints, then refreshes the browser automatically. A systemd path unit starts
+one fixed root-owned updater; the sandboxed web service receives no general
+`sudo` or command-execution permission.
+
 What it does: installs apt packages, creates the `turret` system user, clones
 the repository to `/opt/turret-control`, builds a virtualenv and the frontend,
 writes `/etc/turret-control/turret.env` (generating a controller token),
@@ -89,7 +98,7 @@ and fetches the web application plus one of its built assets.
 | --------------------------- | ----------------------------------------- |
 | `/opt/turret-control`       | code and virtualenv (root-owned)          |
 | `/etc/turret-control`       | `turret.env` — secrets, 0640 root:turret  |
-| `/var/lib/turret-control`   | database, models, snapshots               |
+| `/var/lib/turret-control`   | database, models, snapshots, update status/log |
 | `/var/backups/turret-control` | pre-update backups (last 5)             |
 
 ```bash

@@ -95,6 +95,60 @@ async def system(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     return runtime.system_info()
 
 
+class SystemUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["UPDATE"]
+
+
+@router.get("/system/update")
+async def system_update_status(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
+    return runtime.system_update.status()
+
+
+@router.get("/system/update/overview")
+async def system_update_overview(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
+    return runtime.system_update.overview()
+
+
+@router.post("/system/update/check")
+async def check_system_update(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
+    await runtime.system_update.refresh_version()
+    return runtime.system_update.status()
+
+
+@router.post("/system/update")
+async def start_system_update(
+    payload: SystemUpdateRequest, runtime: RuntimeDep, _auth: AuthDep
+) -> dict[str, Any]:
+    # Enter a safe state before a potentially long package/build phase. The
+    # external updater later restarts this process and verifies its endpoints.
+    if not runtime.system_update.updater_available:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "the privileged web updater is not installed; run the shell updater once first"
+            ),
+        )
+    if runtime.armed:
+        try:
+            await runtime.set_armed(False, source="system-update")
+        except TurretError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot safely disarm before update: {exc}",
+            ) from exc
+    try:
+        result = await runtime.system_update.start_update()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.events.emit(
+        ev.CAT_SYSTEM,
+        "server update requested",
+        data={"target_commit": result.get("target_commit")},
+    )
+    return result
+
+
 @router.get("/detector/catalog")
 async def detector_catalog(runtime: RuntimeDep, _auth: AuthDep) -> dict[str, Any]:
     """Loaded model classes plus warnings for incompatible saved filters."""

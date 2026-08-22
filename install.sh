@@ -45,6 +45,10 @@ VENV_DIR="${APP_DIR}/venv"
 SERVER_DIR="${APP_DIR}/server"
 SERVICE_NAME="turret-control"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+UPDATER_SERVICE_NAME="turret-control-updater"
+UPDATER_SERVICE_FILE="/etc/systemd/system/${UPDATER_SERVICE_NAME}.service"
+UPDATER_PATH_FILE="/etc/systemd/system/${UPDATER_SERVICE_NAME}.path"
+UPDATER_HELPER="/usr/local/libexec/turret-control-web-update"
 ENV_FILE="${CONFIG_DIR}/turret.env"
 LAUNCHER_FILE="/usr/local/bin/turret-update"
 UPDATE_COMMAND="/usr/local/bin/update"
@@ -242,6 +246,7 @@ create_directories() {
     install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 "${DATA_DIR}"
     install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 "${DATA_DIR}/models"
     install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 "${DATA_DIR}/snapshots"
+    install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 "${DATA_DIR}/update"
     install -d -o root -g root -m 0700 "${BACKUP_DIR}"
     ok "directories ready"
 }
@@ -489,6 +494,25 @@ install_service() {
     [[ ${changed} -eq 1 ]] && ok "service file updated" || ok "service file unchanged"
 }
 
+install_web_updater() {
+    step "Installing web update service"
+    local helper_source="${APP_DIR}/deploy/web-update.py"
+    local service_source="${APP_DIR}/deploy/${UPDATER_SERVICE_NAME}.service"
+    local path_source="${APP_DIR}/deploy/${UPDATER_SERVICE_NAME}.path"
+    [[ -f "${helper_source}" ]] || die "web updater missing at ${helper_source}"
+    [[ -f "${service_source}" ]] || die "updater service missing at ${service_source}"
+    [[ -f "${path_source}" ]] || die "updater path unit missing at ${path_source}"
+
+    install -d -o root -g root -m 0755 "$(dirname "${UPDATER_HELPER}")"
+    install -o root -g root -m 0755 "${helper_source}" "${UPDATER_HELPER}"
+    install -o root -g root -m 0644 "${service_source}" "${UPDATER_SERVICE_FILE}"
+    install -o root -g root -m 0644 "${path_source}" "${UPDATER_PATH_FILE}"
+    install -d -o root -g "${APP_GROUP}" -m 0770 "${DATA_DIR}/update"
+    systemctl daemon-reload
+    systemctl enable --now --quiet "${UPDATER_SERVICE_NAME}.path"
+    ok "web updater installed with a restricted systemd request path"
+}
+
 restart_service() {
     step "Restarting the service"
     systemctl restart "${SERVICE_NAME}"
@@ -709,6 +733,7 @@ do_install() {
     build_frontend
     write_config
     install_service
+    install_web_updater
     restart_service
     wait_for_health
     verify_http_endpoints
@@ -727,6 +752,7 @@ do_update() {
     build_frontend
     write_config
     install_service
+    install_web_updater
     restart_service
     wait_for_health
     verify_http_endpoints
@@ -745,6 +771,7 @@ do_repair() {
     build_frontend
     write_config
     install_service
+    install_web_updater
     restart_service
     wait_for_health
     verify_http_endpoints
@@ -777,8 +804,11 @@ do_uninstall() {
         confirm_full_purge || { info "full purge cancelled"; exit 0; }
     fi
     step "Uninstalling"
+    systemctl disable --now "${UPDATER_SERVICE_NAME}.path" 2>/dev/null || true
+    systemctl stop "${UPDATER_SERVICE_NAME}.service" 2>/dev/null || true
     systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
-    rm -f -- "${SERVICE_FILE}"
+    rm -f -- "${SERVICE_FILE}" "${UPDATER_SERVICE_FILE}" "${UPDATER_PATH_FILE}" \
+        "${UPDATER_HELPER}"
     systemctl daemon-reload
     remove_launcher
     safe_remove_tree "${APP_DIR}"

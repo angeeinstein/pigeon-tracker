@@ -27,6 +27,7 @@ from app.services.detection_capture import DetectionCaptureStore
 from app.services.event_log import EventLog, prune_snapshots
 from app.services.settings import SettingsStore
 from app.services.settings_schema import AppSettings
+from app.services.system_update import SystemUpdateManager
 from app.services.telemetry import TelemetryHub
 from app.targeting.calibration import CalibrationService
 from app.targeting.mapping import AimSolution
@@ -61,6 +62,7 @@ class Runtime:
         self.events = EventLog()
         self.detection_captures = DetectionCaptureStore(config.resolved_detection_dir)
         self.telemetry = TelemetryHub()
+        self.system_update = SystemUpdateManager(config.data_dir)
 
         settings = self.settings_store.current
         self.camera_credentials = CameraCredentialStore(config.data_dir / "camera_credentials.json")
@@ -120,6 +122,9 @@ class Runtime:
             asyncio.create_task(self._targeting_loop(), name="targeting"),
             asyncio.create_task(self._telemetry_loop(), name="telemetry"),
             asyncio.create_task(self._maintenance_loop(), name="maintenance"),
+            asyncio.create_task(
+                self.system_update.monitor_versions(), name="update-version-monitor"
+            ),
         ]
         await self._sync_controller_mode()
         await self.events.emit(
