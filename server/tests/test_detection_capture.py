@@ -139,6 +139,38 @@ async def test_capture_filters_and_bulk_review(temp_database: Path, tmp_path: Pa
     assert rejected["total"] == 2
 
 
+async def test_deleted_capture_id_is_never_reused(temp_database: Path, tmp_path: Path) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    image = np.zeros((120, 160, 3), dtype=np.uint8)
+    first = await store.create(
+        image=image,
+        camera_id="overview",
+        frame_seq=1,
+        detections=[],
+        class_name="manual",
+        confidence=None,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+
+    assert await store.delete(int(first["id"]))
+    second = await store.create(
+        image=image,
+        camera_id="overview",
+        frame_seq=2,
+        detections=[],
+        class_name="manual",
+        confidence=None,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+
+    assert int(second["id"]) > int(first["id"])
+    assert await store.image_for(int(first["id"])) is None
+
+
 async def test_motion_rescan_source_is_preserved_for_review(
     temp_database: Path, tmp_path: Path
 ) -> None:

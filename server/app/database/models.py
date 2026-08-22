@@ -174,6 +174,11 @@ class DetectionCapture(Base):
     """A detector evidence frame that can later become training data."""
 
     __tablename__ = "detection_captures"
+    # Capture IDs are exposed in image URLs. SQLite's default ROWID allocator
+    # can reuse the highest deleted ID, allowing a newly-created capture to
+    # appear at a URL that was just deleted. AUTOINCREMENT keeps those public
+    # identifiers monotonic instead.
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(

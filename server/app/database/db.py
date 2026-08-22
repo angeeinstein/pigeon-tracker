@@ -79,6 +79,11 @@ def run_migrations(engine: Engine) -> int:
             log.info("database created", extra={"ctx": {"version": LATEST_VERSION}})
             return LATEST_VERSION
 
+        # Empty migrations introduce new tables through ORM metadata. Create
+        # those tables before later migrations try to alter them, which also
+        # makes upgrading across several releases in one step safe.
+        Base.metadata.create_all(bind=conn)
+
         applied = current
         for migration in sorted(MIGRATIONS, key=lambda m: m.version):
             if migration.version <= current:
