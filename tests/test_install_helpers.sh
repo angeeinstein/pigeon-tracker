@@ -90,6 +90,11 @@ mkdir -p "${DATA_DIR}"
 test_python="python3"
 if [[ -x "${repo_root}/server/.venv/Scripts/python.exe" ]]; then
     test_python="${repo_root}/server/.venv/Scripts/python.exe"
+    # Git Bash cannot execute its normal `python3` command in this Windows
+    # development environment. Only install a shim when using the explicit
+    # Windows interpreter; redefining python3 as a function that calls the
+    # string "python3" recursively breaks the Linux CI runner.
+    python3() { "${test_python}" "$@"; }
 fi
 "${test_python}" - "${DATA_DIR}/turret.db" <<'PY'
 import json
@@ -105,7 +110,6 @@ connection.execute(
 connection.commit()
 connection.close()
 PY
-python3() { "${test_python}" "$@"; }
 AI_DEVICE_OVERRIDE=""
 [[ "$(configured_ai_device)" == "cuda" ]] || fail "saved detector device was not read"
 
