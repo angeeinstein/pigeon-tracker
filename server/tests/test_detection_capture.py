@@ -102,6 +102,47 @@ async def test_rejecting_last_box_completes_negative_capture(
     assert completed["detections"][0]["review_status"] == "rejected"  # type: ignore[index]
 
 
+async def test_review_snapshot_can_be_restored(temp_database: Path, tmp_path: Path) -> None:
+    store = DetectionCaptureStore(tmp_path / "detections")
+    capture = await store.create(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        camera_id="overview",
+        frame_seq=4,
+        detections=[proposal("bird", 0.8, 0), proposal("bird", 0.2, 150)],
+        class_name="bird",
+        confidence=0.8,
+        model_name="test.pt",
+        detector_settings={},
+        jpeg_quality=80,
+    )
+    capture_id = int(capture["id"])
+    reviewed = await store.review_annotation(
+        capture_id, 0, review_status="accepted", review_label="bird"
+    )
+    assert reviewed is not None
+    assert reviewed["detections"][0]["review_status"] == "accepted"  # type: ignore[index]
+
+    restored = await store.restore_review(
+        capture_id,
+        review_status=str(capture["review_status"]),
+        review_label=str(capture["review_label"]),
+        annotations=[
+            {
+                "review_status": str(item["review_status"]),
+                "review_label": str(item["review_label"]),
+            }
+            for item in capture["detections"]  # type: ignore[union-attr]
+        ],
+    )
+
+    assert restored is not None
+    assert restored["review_status"] == "unreviewed"
+    assert [item["review_status"] for item in restored["detections"]] == [  # type: ignore[index]
+        "unreviewed",
+        "unreviewed",
+    ]
+
+
 async def test_capture_filters_and_bulk_review(temp_database: Path, tmp_path: Path) -> None:
     store = DetectionCaptureStore(tmp_path / "detections")
     first = await store.create(

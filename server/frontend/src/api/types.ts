@@ -239,6 +239,52 @@ export interface CameraStatus {
   error: string | null;
 }
 
+export interface VisionHealth {
+  enabled: boolean;
+  running: boolean;
+  detector: {
+    backend: string;
+    loaded: boolean;
+    device: string;
+    model: string;
+    classes: string[];
+    last_inference_ms: number;
+    inferences: number;
+    error: string | null;
+    configured_backend?: string;
+    configured_model?: string;
+    active_backend?: string | null;
+    active_model?: string | null;
+    catalog_current?: boolean;
+    reload_pending?: boolean;
+    reload_error?: string | null;
+  };
+  tracker: {
+    enabled: boolean;
+    algorithm: string;
+    active_tracks: number;
+  };
+  scene_motion: {
+    enabled: boolean;
+    warming_up: boolean;
+    global_change: boolean;
+    changed_ratio: number;
+    regions: unknown[];
+    active_events: number;
+    frames: number;
+    rescans: number;
+    rescan_detections: number;
+    error: string | null;
+  };
+  target_fps: number;
+  effective_fps: number;
+  ticks: number;
+  processing: Record<string, number>;
+  error: string | null;
+  last_result_age_s: number | null;
+  result_stale: boolean;
+}
+
 export interface Health {
   status: string;
   checks: Record<string, boolean>;
@@ -266,7 +312,7 @@ export interface Health {
     };
     state: Record<string, unknown>;
   };
-  vision: Record<string, unknown>;
+  vision: VisionHealth;
   database: Record<string, unknown>;
   calibration: { camera_id: string; calibrated: boolean; strategy: string; surfaces: unknown[] };
   telemetry_clients: number;

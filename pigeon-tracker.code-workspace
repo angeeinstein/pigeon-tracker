@@ -20,6 +20,12 @@
     "files.trimTrailingWhitespace": true,
     "files.insertFinalNewline": true,
 
+    // The firmware is built by PlatformIO. CMakeLists.txt files below it are
+    // ESP-IDF components, not a standalone CMake Tools project.
+    "cmake.configureOnOpen": false,
+    "cmake.automaticReconfigure": false,
+    "cmake.enableAutomaticKitScan": false,
+
     // The generated protocol header is written by
     // server/tools/gen_protocol_header.py - edit the Python, not the header.
     "files.readonlyInclude": {

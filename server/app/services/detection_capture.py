@@ -389,6 +389,49 @@ class DetectionCaptureStore:
 
         return await run_db(_update)
 
+    async def restore_review(
+        self,
+        capture_id: int,
+        *,
+        review_status: str,
+        review_label: str,
+        annotations: Sequence[dict[str, str]],
+    ) -> dict[str, object] | None:
+        """Restore one client-supplied review snapshot without changing boxes.
+
+        The annotation count must still match. This prevents an undo from
+        silently applying review decisions to different boxes after a manual
+        annotation was added or removed.
+        """
+        if review_status not in REVIEW_STATUSES:
+            raise ValueError("invalid review status")
+
+        def _restore(session: Session) -> dict[str, object] | None:
+            row = session.get(DetectionCapture, capture_id)
+            if row is None:
+                return None
+            current = [_normalise_annotation(item) for item in row.detections]
+            if len(current) != len(annotations):
+                raise ValueError("capture annotations changed; the last review cannot be undone")
+            for annotation, snapshot in zip(current, annotations, strict=True):
+                annotation_status = str(snapshot.get("review_status", ""))
+                if annotation_status not in ANNOTATION_STATUSES:
+                    raise ValueError("invalid annotation review status")
+                annotation["review_status"] = annotation_status
+                annotation["review_label"] = (
+                    str(snapshot.get("review_label", "")).strip()[:128]
+                    if annotation_status == "accepted"
+                    else ""
+                )
+            row.detections = current
+            row.review_status = review_status
+            row.review_label = review_label.strip()[:128]
+            session.flush()
+            session.refresh(row)
+            return _capture_dict(row)
+
+        return await run_db(_restore)
+
     async def add_annotation(
         self,
         capture_id: int,

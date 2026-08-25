@@ -170,11 +170,7 @@ export default function System() {
         ))}
       </Card>
 
-      <Card title="AI">
-        <pre className="tabular overflow-x-auto whitespace-pre-wrap text-xs text-muted">
-          {JSON.stringify(info.vision, null, 2)}
-        </pre>
-      </Card>
+      <AiStatus vision={info.vision} />
 
       <Card title="Environment">
         <StatusRow label="Torch installed" value={gpu.torch ? 'yes' : 'no'} />
@@ -204,6 +200,133 @@ export default function System() {
   );
 }
 
+function AiStatus({ vision }: { vision: Awaited<ReturnType<typeof api.health>>['vision'] }) {
+  const detector = vision.detector;
+  const tracker = vision.tracker;
+  const motion = vision.scene_motion;
+  const processing = vision.processing;
+  const modelName = detector.model.split(/[\\/]/).pop() || detector.model || 'not loaded';
+  const configuredModel = detector.configured_model?.split(/[\\/]/).pop();
+  const modelMismatch =
+    configuredModel && detector.active_model && detector.configured_model !== detector.active_model;
+  const formatMs = (value: number | undefined) =>
+    typeof value === 'number' ? `${value.toFixed(1)} ms` : '—';
+
+  return (
+    <Card title="AI" className="md:col-span-2">
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Pill tone={vision.running ? 'good' : vision.enabled ? 'bad' : 'idle'}>
+          {vision.running ? 'pipeline running' : vision.enabled ? 'pipeline stopped' : 'disabled'}
+        </Pill>
+        <Pill tone={detector.loaded ? 'good' : 'bad'}>
+          detector {detector.loaded ? 'loaded' : 'not loaded'}
+        </Pill>
+        <Pill tone={detector.device.toLowerCase().includes('cuda') ? 'info' : 'idle'}>
+          {detector.device || 'device unknown'}
+        </Pill>
+        {detector.reload_pending ? <Pill tone="warn">model reload pending</Pill> : null}
+        {vision.result_stale ? <Pill tone="warn">latest result stale</Pill> : null}
+      </div>
+
+      {vision.error ? <Banner tone="warn">Pipeline: {vision.error}</Banner> : null}
+      {detector.error ? <Banner tone="warn">Detector: {detector.error}</Banner> : null}
+      {detector.reload_error ? (
+        <Banner tone="warn">Model reload: {detector.reload_error}</Banner>
+      ) : null}
+      {motion.error ? <Banner tone="warn">Motion detection: {motion.error}</Banner> : null}
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="rounded-lg border border-edge bg-panelalt/35 p-3">
+          <h3 className="mb-2 text-sm font-semibold text-ink">Detector</h3>
+          <StatusRow label="Model" value={<span title={detector.model}>{modelName}</span>} />
+          {modelMismatch ? (
+            <StatusRow
+              label="Configured model"
+              value={<span className="text-warn">{configuredModel}</span>}
+            />
+          ) : null}
+          <StatusRow label="Backend" value={detector.backend || '—'} />
+          <StatusRow label="Device" value={detector.device || '—'} />
+          <StatusRow label="Inference count" value={detector.inferences.toLocaleString()} />
+          <StatusRow label="Latest inference" value={formatMs(detector.last_inference_ms)} />
+        </div>
+
+        <div className="rounded-lg border border-edge bg-panelalt/35 p-3">
+          <h3 className="mb-2 text-sm font-semibold text-ink">Throughput and tracking</h3>
+          <StatusRow label="Requested rate" value={`${vision.target_fps.toFixed(1)} fps`} />
+          <StatusRow label="Effective rate" value={`${vision.effective_fps.toFixed(1)} fps`} />
+          <StatusRow label="Processed frames" value={vision.ticks.toLocaleString()} />
+          <StatusRow
+            label="Latest result age"
+            value={
+              vision.last_result_age_s === null ? '—' : `${vision.last_result_age_s.toFixed(2)} s`
+            }
+          />
+          <StatusRow label="Tracker" value={tracker.enabled ? tracker.algorithm : 'disabled'} />
+          <StatusRow label="Active tracks" value={tracker.active_tracks} />
+        </div>
+
+        <div className="rounded-lg border border-edge bg-panelalt/35 p-3">
+          <h3 className="mb-2 text-sm font-semibold text-ink">Scene motion</h3>
+          <StatusRow
+            label="State"
+            value={!motion.enabled ? 'disabled' : motion.warming_up ? 'warming up' : 'monitoring'}
+          />
+          <StatusRow label="Changed area" value={`${(motion.changed_ratio * 100).toFixed(2)}%`} />
+          <StatusRow label="Regions now" value={motion.regions.length} />
+          <StatusRow label="Active events" value={motion.active_events} />
+          <StatusRow label="Rescans" value={motion.rescans.toLocaleString()} />
+          <StatusRow label="Rescan detections" value={motion.rescan_detections.toLocaleString()} />
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-edge bg-panelalt/35 p-3">
+        <h3 className="mb-2 text-sm font-semibold text-ink">Recent processing time</h3>
+        <div className="grid gap-x-8 md:grid-cols-2">
+          <StatusRow
+            label="Model inference (mean / p95)"
+            value={`${formatMs(processing.inference_ms_mean)} / ${formatMs(processing.inference_ms_p95)}`}
+          />
+          <StatusRow
+            label="Total per frame (mean / p95)"
+            value={`${formatMs(processing.total_ms_mean)} / ${formatMs(processing.total_ms_p95)}`}
+          />
+          <StatusRow
+            label="Motion analysis (mean / p95)"
+            value={`${formatMs(processing.scene_motion_ms_mean)} / ${formatMs(processing.scene_motion_ms_p95)}`}
+          />
+          <StatusRow
+            label="Motion rescan (mean / p95)"
+            value={`${formatMs(processing.motion_rescan_ms_mean)} / ${formatMs(processing.motion_rescan_ms_p95)}`}
+          />
+        </div>
+      </div>
+
+      <details className="mt-4 rounded-lg border border-edge p-3">
+        <summary className="cursor-pointer select-none text-sm font-medium text-muted hover:text-ink">
+          Model classes ({detector.classes.length})
+        </summary>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {detector.classes.map((name) => (
+            <span key={name} className="rounded border border-edge bg-panelalt px-2 py-1 text-xs">
+              {name}
+            </span>
+          ))}
+        </div>
+      </details>
+
+      <details className="mt-3 rounded-lg border border-edge p-3">
+        <summary className="cursor-pointer select-none text-sm font-medium text-muted hover:text-ink">
+          Raw diagnostics
+        </summary>
+        <pre className="tabular mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-muted">
+          {JSON.stringify(vision, null, 2)}
+        </pre>
+      </details>
+    </Card>
+  );
+}
+
 function UpdateCard({
   status,
   error,
@@ -221,8 +344,7 @@ function UpdateCard({
 }) {
   const version = status?.version_check;
   const maintenance = status?.maintenance;
-  const actionAvailable =
-    version?.update_available === true || maintenance?.required === true;
+  const actionAvailable = version?.update_available === true || maintenance?.required === true;
   const running = ['starting', 'checking', 'updating', 'restarting', 'verifying'].includes(
     status?.state ?? '',
   );
@@ -245,12 +367,7 @@ function UpdateCard({
           </button>
           <button
             className="btn btn-primary px-3 py-1.5 text-xs"
-            disabled={
-              running ||
-              busy !== null ||
-              !status?.updater_available ||
-              !actionAvailable
-            }
+            disabled={running || busy !== null || !status?.updater_available || !actionAvailable}
             onClick={onStart}
           >
             {busy === 'start'

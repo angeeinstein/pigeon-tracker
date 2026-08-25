@@ -1,0 +1,6 @@
+server/frontend/dist
+server/frontend/node_modules
+firmware/.pio
+firmware/managed_components
+server/data
+docs/benchmark-report-*

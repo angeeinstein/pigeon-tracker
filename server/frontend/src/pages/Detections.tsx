@@ -43,6 +43,7 @@ export default function Detections() {
   const [viewerTotal, setViewerTotal] = useState(0);
   const [viewerHasPrevious, setViewerHasPrevious] = useState(false);
   const [viewerHasNext, setViewerHasNext] = useState(false);
+  const [lastReview, setLastReview] = useState<DetectionCapture | null>(null);
   const captures = useAsync(
     () =>
       api.detectionCapturePage({
@@ -117,12 +118,15 @@ export default function Detections() {
 
   async function updateViewer(
     operation: () => Promise<DetectionCapture>,
+    rememberReview = false,
   ): Promise<DetectionCapture | null> {
     if (!viewerCapture) return null;
+    const previous = viewerCapture;
     setBusy(viewerCapture.id);
     setActionError(null);
     try {
       const updated = await operation();
+      if (rememberReview) setLastReview(previous);
       setViewerCapture(updated);
       const context = await api.navigateDetectionCaptures(updated.id, 'current', navigationFilters);
       setViewerPosition(context.position);
@@ -134,6 +138,32 @@ export default function Detections() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       return null;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function undoLastReview() {
+    if (!lastReview || busy !== null) return;
+    setBusy(lastReview.id);
+    setActionError(null);
+    try {
+      const restored = await api.restoreDetectionCaptureReview(lastReview);
+      const context = await api.navigateDetectionCaptures(
+        restored.id,
+        'current',
+        navigationFilters,
+      );
+      setLastReview(null);
+      setViewerCapture(restored);
+      setViewerPosition(context.position);
+      setViewerTotal(context.total);
+      setViewerHasPrevious(context.has_previous);
+      setViewerHasNext(context.has_next);
+      setPageOffset(Math.max(0, Math.floor((context.position - 1) / PAGE_SIZE) * PAGE_SIZE));
+      captures.reload();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(null);
     }
@@ -455,17 +485,21 @@ export default function Detections() {
           position={`${viewerPosition} / ${viewerTotal}`}
           canPrevious={viewerHasPrevious}
           canNext={viewerHasNext}
+          canUndo={lastReview !== null}
           onClose={() => setViewerCapture(null)}
           onPrevious={() => void moveViewer(-1)}
           onNext={() => void moveViewer(1)}
+          onUndo={() => void undoLastReview()}
           onReview={(index, reviewStatus) =>
-            updateViewer(() =>
-              api.reviewDetectionAnnotation(
-                viewerCapture.id,
-                index,
-                reviewStatus,
-                reviewStatus === 'accepted' ? 'bird' : '',
-              ),
+            updateViewer(
+              () =>
+                api.reviewDetectionAnnotation(
+                  viewerCapture.id,
+                  index,
+                  reviewStatus,
+                  reviewStatus === 'accepted' ? 'bird' : '',
+                ),
+              true,
             )
           }
           onAdd={(bbox) =>
@@ -475,10 +509,13 @@ export default function Detections() {
             updateViewer(() => api.deleteDetectionAnnotation(viewerCapture.id, index))
           }
           onRejectRemaining={() =>
-            updateViewer(() => api.rejectUnreviewedDetectionAnnotations(viewerCapture.id))
+            updateViewer(() => api.rejectUnreviewedDetectionAnnotations(viewerCapture.id), true)
           }
           onRejectImage={() =>
-            updateViewer(() => api.reviewDetectionCapture(viewerCapture.id, 'rejected', 'not-bird'))
+            updateViewer(
+              () => api.reviewDetectionCapture(viewerCapture.id, 'rejected', 'not-bird'),
+              true,
+            )
           }
         />
       )}
@@ -616,9 +653,11 @@ function CaptureReviewer({
   position,
   canPrevious,
   canNext,
+  canUndo,
   onClose,
   onPrevious,
   onNext,
+  onUndo,
   onReview,
   onAdd,
   onDeleteAnnotation,
@@ -631,9 +670,11 @@ function CaptureReviewer({
   position: string;
   canPrevious: boolean;
   canNext: boolean;
+  canUndo: boolean;
   onClose: () => void;
   onPrevious: () => void;
   onNext: () => void;
+  onUndo: () => void;
   onReview: (index: number, status: DetectionAnnotationStatus) => Promise<DetectionCapture | null>;
   onAdd: (bbox: [number, number, number, number]) => Promise<DetectionCapture | null>;
   onDeleteAnnotation: (index: number) => Promise<DetectionCapture | null>;
@@ -718,6 +759,7 @@ function CaptureReviewer({
       else if (key === 'b') setDrawMode((active) => !active);
       else if (key === 'h') setBoxesHidden((hidden) => !hidden);
       else if (key === 'n') void rejectImage();
+      else if (key === 'z' && canUndo) onUndo();
       else if (key === '[') cycleBox(-1);
       else if (key === ']') cycleBox(1);
       else if (key === 'escape') {
@@ -802,6 +844,14 @@ function CaptureReviewer({
         </button>
         <button className="btn px-3 py-1.5" disabled={!canNext} onClick={onNext}>
           Next
+        </button>
+        <button
+          className="btn px-3 py-1.5"
+          disabled={!canUndo || busy}
+          onClick={onUndo}
+          title="Restore the review state before your last decision and reopen that image"
+        >
+          Undo last review (Z)
         </button>
         <span className="text-sm text-muted">{position}</span>
         <span className="ml-auto text-sm font-semibold text-ink">
@@ -989,7 +1039,7 @@ function CaptureReviewer({
             <p>A/Enter correct bird / X wrong / U reset</p>
             <p>[ and ] select box / B draw box / N no bird</p>
             <p>H toggle boxes / hold Space to peek</p>
-            <p>Left/Right image / Esc close</p>
+            <p>Z undo last review / Left/Right image / Esc close</p>
           </div>
         </aside>
       </div>

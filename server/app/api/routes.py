@@ -918,6 +918,19 @@ class DetectionAnnotationReviewRequest(BaseModel):
     review_label: str = Field(default="", max_length=128)
 
 
+class DetectionAnnotationReviewSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    review_status: Literal["unreviewed", "accepted", "rejected"]
+    review_label: str = Field(default="", max_length=128)
+
+
+class DetectionCaptureReviewRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    review_status: Literal["unreviewed", "training", "rejected"]
+    review_label: str = Field(default="", max_length=128)
+    annotations: list[DetectionAnnotationReviewSnapshot] = Field(max_length=1000)
+
+
 class DetectionAnnotationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bbox: tuple[float, float, float, float]
@@ -1074,6 +1087,27 @@ async def review_detection_annotation(
         )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if capture is None:
+        raise HTTPException(status_code=404, detail="detection capture not found")
+    return capture
+
+
+@router.post("/detection-captures/{capture_id}/review/restore")
+async def restore_detection_capture_review(
+    capture_id: int,
+    payload: DetectionCaptureReviewRestoreRequest,
+    runtime: RuntimeDep,
+    _auth: AuthDep,
+) -> dict[str, object]:
+    try:
+        capture = await runtime.detection_captures.restore_review(
+            capture_id,
+            review_status=payload.review_status,
+            review_label=payload.review_label,
+            annotations=[annotation.model_dump() for annotation in payload.annotations],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if capture is None:
         raise HTTPException(status_code=404, detail="detection capture not found")
     return capture

@@ -318,6 +318,15 @@ export const api = {
         body: JSON.stringify({ review_status, review_label }),
       },
     ),
+  restoreDetectionCaptureReview: (capture: DetectionCapture) =>
+    post<DetectionCapture>(`/api/detection-captures/${capture.id}/review/restore`, {
+      review_status: capture.review_status,
+      review_label: capture.review_label,
+      annotations: capture.detections.map(({ review_status, review_label }) => ({
+        review_status,
+        review_label,
+      })),
+    }),
   addDetectionAnnotation: (
     captureId: number,
     bbox: [number, number, number, number],

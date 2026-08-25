@@ -1,0 +1,340 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "CPU and GPU Detection Benchmark",
+    "description": "Three-phase live-camera benchmark of detector-off, CPU, and CUDA operation.",
+    "generatedAt": "2026-08-23T00:00:00+02:00",
+    "sources": [
+      {
+        "id": "aligned-benchmark",
+        "label": "Aligned pigeon-tracker inference and Proxmox host-power benchmark",
+        "query": {
+          "engine": "SQLite",
+          "language": "SQL",
+          "sql": "WITH phase_summary(sequence, mode, samples, duration_s, container_cpu_percent, container_cpu_cores, memory_mib, camera_decode_fps, processed_fps, inference_ms, stall_seconds, cpu_package_w, gpu_board_w, combined_power_w, joules_per_result) AS (VALUES (1, 'Detector off', 59, 118.63, 71.161, 1.423, 1598.6, 45.067, 0.0, NULL, 0.0, 44.361, 5.665, 50.026, NULL), (2, 'CPU', 59, 119.91, 87.302, 1.746, 1935.7, 34.099, 2.327, 335.05, 14.19, 46.636, 5.298, 51.934, 22.318), (3, 'CUDA', 59, 119.18, 87.451, 1.749, 1998.1, 47.551, 5.974, 23.724, 0.0, 42.929, 20.359, 63.287, 10.594)) SELECT * FROM phase_summary ORDER BY sequence;",
+          "description": "Materializes the reviewed phase aggregates calculated by grouping the inference benchmark by detector mode, then selecting Proxmox samples whose UTC timestamps fell between the first and last measured sample of each phase and averaging the power fields.",
+          "executed_at": "2026-08-23T00:00:00+02:00",
+          "tables_used": [
+            "pigeon-inference-benchmark-v2.csv",
+            "pigeon-host-power-v2.csv"
+          ],
+          "filters": [
+            "Measured detector phases only: off, cpu, auto (CUDA)",
+            "Warm-up and inter-phase reload intervals excluded",
+            "Host samples aligned by UTC timestamp to each measured phase"
+          ],
+          "metric_definitions": [
+            "Container CPU percent is usage relative to the LXC's two allocated cores; 100% equals two cores.",
+            "Host combined power is Intel RAPL CPU-package power plus Quadro P2000 board power.",
+            "Processed FPS is the change in completed vision-pipeline results divided by measured phase duration.",
+            "Energy per processed result is mean host combined watts divided by processed results per second."
+          ]
+        }
+      }
+    ],
+    "charts": [
+      {
+        "id": "phase-power",
+        "title": "Measured host power by detector mode",
+        "subtitle": "Two-minute measured phases; CPU package plus the passed-through Quadro P2000",
+        "showDescription": true,
+        "type": "bar",
+        "dataset": "phase_summary",
+        "sourceId": "aligned-benchmark",
+        "encodings": {
+          "x": {
+            "field": "mode",
+            "type": "nominal",
+            "label": "Detector mode"
+          },
+          "y": {
+            "field": "combined_power_w",
+            "type": "quantitative",
+            "format": "number",
+            "label": "CPU package + GPU",
+            "unit": "W"
+          },
+          "tooltip": [
+            {
+              "field": "cpu_package_w",
+              "type": "quantitative",
+              "label": "CPU package",
+              "unit": "W"
+            },
+            {
+              "field": "gpu_board_w",
+              "type": "quantitative",
+              "label": "GPU board",
+              "unit": "W"
+            },
+            {
+              "field": "processed_fps",
+              "type": "quantitative",
+              "label": "Processed FPS"
+            }
+          ]
+        },
+        "xAxisTitle": "Detector mode",
+        "yAxisTitle": "Watts",
+        "valueFormat": "number",
+        "unit": "W",
+        "layout": "full",
+        "maxRows": 3
+      },
+      {
+        "id": "phase-throughput",
+        "title": "Completed vision results by detector mode",
+        "subtitle": "CUDA sustains the configured 6 FPS; CPU does not",
+        "showDescription": true,
+        "type": "bar",
+        "dataset": "phase_summary",
+        "sourceId": "aligned-benchmark",
+        "encodings": {
+          "x": {
+            "field": "mode",
+            "type": "nominal",
+            "label": "Detector mode"
+          },
+          "y": {
+            "field": "processed_fps",
+            "type": "quantitative",
+            "format": "number",
+            "label": "Processed results",
+            "unit": "FPS"
+          },
+          "tooltip": [
+            {
+              "field": "inference_ms",
+              "type": "quantitative",
+              "label": "Model inference",
+              "unit": "ms"
+            },
+            {
+              "field": "stall_seconds",
+              "type": "quantitative",
+              "label": "No-progress time",
+              "unit": "s"
+            },
+            {
+              "field": "container_cpu_percent",
+              "type": "quantitative",
+              "label": "Container CPU",
+              "unit": "%"
+            }
+          ]
+        },
+        "xAxisTitle": "Detector mode",
+        "yAxisTitle": "Processed results per second",
+        "valueFormat": "number",
+        "unit": "FPS",
+        "layout": "full",
+        "maxRows": 3,
+        "referenceLines": [
+          {
+            "value": 6,
+            "label": "Configured target",
+            "lineStyle": "dashed",
+            "role": "target"
+          }
+        ]
+      }
+    ],
+    "tables": [
+      {
+        "id": "phase-detail",
+        "title": "Phase measurements",
+        "subtitle": "Means over approximately two minutes per phase",
+        "showDescription": true,
+        "dataset": "phase_summary",
+        "defaultSort": {
+          "field": "sequence",
+          "direction": "asc"
+        },
+        "density": "spacious",
+        "sourceId": "aligned-benchmark",
+        "layout": "full",
+        "columns": [
+          { "field": "sequence", "label": "Phase", "format": "number" },
+          { "field": "mode", "label": "Mode", "type": "text" },
+          { "field": "container_cpu_percent", "label": "LXC CPU %", "format": "number" },
+          { "field": "camera_decode_fps", "label": "Camera FPS", "format": "number" },
+          { "field": "processed_fps", "label": "Processed FPS", "format": "number" },
+          { "field": "inference_ms", "label": "Inference ms", "format": "number" },
+          { "field": "cpu_package_w", "label": "CPU W", "format": "number" },
+          { "field": "gpu_board_w", "label": "GPU W", "format": "number" },
+          { "field": "combined_power_w", "label": "Combined W", "format": "number" },
+          { "field": "joules_per_result", "label": "J/result", "format": "number" }
+        ]
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# CPU and GPU Detection Benchmark",
+        "layout": "full"
+      },
+      {
+        "id": "executive-summary",
+        "type": "markdown",
+        "body": "## Executive Summary\n\n- **Camera handling is the main CPU baseline.** With detection completely disabled, two FFmpeg camera streams still consumed 71.2% of the two-core LXC allocation (1.42 cores) while decoding about 45 FPS.\n- **CUDA is the only tested mode that meets the configured 6 FPS.** It delivered 5.97 processed FPS with no stalled intervals, versus 2.33 FPS and 14.2 seconds without progress on CPU.\n- **CUDA trades higher instantaneous power for much more work.** Host CPU-plus-GPU power averaged 63.3 W on CUDA versus 51.9 W on CPU, but energy per completed result fell from 22.3 J to 10.6 J.\n- **Recommendation:** keep CUDA for reliable six-FPS detection, then reduce continuous software decoding—especially for cameras not currently used for detection—to lower total power.",
+        "layout": "full",
+        "sourceId": "aligned-benchmark"
+      },
+      {
+        "id": "power-heading",
+        "type": "markdown",
+        "body": "## Detection-off proves most CPU work is outside the model\n\nThe detector-off phase is the clean control: it produced no pipeline results, yet the LXC still used 1.42 CPU cores and host CPU-package power averaged 44.4 W. That confirms the neural network is not the main explanation for the high CPU reading. Both connected RTSP streams remain open and FFmpeg decodes roughly 45 frames per second even though only the primary camera enters detection.",
+        "layout": "full",
+        "sourceId": "aligned-benchmark"
+      },
+      {
+        "id": "power-chart-block",
+        "type": "chart",
+        "chartId": "phase-power",
+        "layout": "full"
+      },
+      {
+        "id": "power-interpretation",
+        "type": "markdown",
+        "body": "CUDA raises measured CPU-plus-GPU draw by 11.4 W relative to CPU mode and 13.3 W relative to the detector-off baseline. The P2000 itself moves from about 5.7 W idle to 20.4 W while active. If the only objective were minimum instantaneous watts and 2.3 FPS were acceptable, CPU mode would win; it does not satisfy the current performance target.",
+        "layout": "full",
+        "sourceId": "aligned-benchmark"
+      },
+      {
+        "id": "throughput-heading",
+        "type": "markdown",
+        "body": "## CUDA converts the same CPU load into 2.6× more completed work\n\nContainer CPU averaged nearly the same in CPU and CUDA phases—87.3% and 87.5%—but this is not evidence that CUDA failed. CPU inference saturates the container and slows camera intake to about 34 FPS. CUDA finishes model inference around 14 times faster, restores camera intake to about 48 FPS, and lets scene-motion processing and the complete six-FPS pipeline run continuously.",
+        "layout": "full",
+        "sourceId": "aligned-benchmark"
+      },
+      {
+        "id": "throughput-chart-block",
+        "type": "chart",
+        "chartId": "phase-throughput",
+        "layout": "full"
+      },
+      {
+        "id": "throughput-interpretation",
+        "type": "markdown",
+        "body": "On an absolute whole-system basis, CUDA uses about 10.6 J per completed result compared with 22.3 J on CPU—a 52.6% reduction. This normalization is useful for efficiency, but the service runs continuously at a configured rate, so the 11.4 W higher wall-clock draw remains the relevant electricity cost unless CUDA FPS is reduced.",
+        "layout": "full",
+        "sourceId": "aligned-benchmark"
+      },
+      {
+        "id": "detail-table-block",
+        "type": "table",
+        "tableId": "phase-detail",
+        "layout": "full"
+      },
+      {
+        "id": "recommendations",
+        "type": "markdown",
+        "body": "## Recommended next steps\n\n1. **Keep detector device set to Auto/CUDA for now.** It is stable, healthy, and meets the configured six-FPS target.\n2. **Add connection policies per camera.** Keep the primary detection camera continuous; allow auxiliary cameras to be opened on demand for the camera page, or continuously only when multi-camera detection is enabled. This targets the largest verified CPU baseline without changing detection quality.\n3. **Prefer lower-rate substreams for overview and auxiliary views.** Decode a high-resolution stream only when it is needed for detection, review, or an enlarged live view.\n4. **After decoder optimization, rerun the same three phases.** The success criterion is materially below 1.42 baseline CPU cores while primary-camera detection remains at six FPS.\n5. **Optionally benchmark CUDA at 3 and 4 FPS.** That will show whether the P2000 can spend more time in its low-power state while retaining adequate responsiveness.",
+        "layout": "full"
+      },
+      {
+        "id": "further-questions",
+        "type": "markdown",
+        "body": "## Further questions\n\n- How much of the 1.42-core baseline belongs to the primary G5 stream versus the auxiliary Tapo stream?\n- Can either camera provide a lower-frame-rate substream with enough detail for its intended role?\n- What is the lowest operational detection rate that still catches short bird arrivals reliably?",
+        "layout": "full"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats and assumptions\n\nHost CPU power is the entire Intel CPU package, not the pigeon-tracker LXC alone, and the measurements exclude motherboard, storage, networking, and PSU losses. The phases lasted about two minutes each and ran sequentially rather than in randomized order. Detector-off timing fields visible in the raw health samples are stale last-known values; the monotonic inference and pipeline counters did not advance, confirming that detection was actually stopped. Energy per result divides continuous host power by completed pipeline throughput and should not be interpreted as marginal model energy.",
+        "layout": "full"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-23T00:00:00+02:00",
+    "status": "ready",
+    "datasets": {
+      "phase_summary": [
+        {
+          "sequence": 1,
+          "mode": "Detector off",
+          "samples": 59,
+          "duration_s": 118.63,
+          "container_cpu_percent": 71.161,
+          "container_cpu_cores": 1.423,
+          "memory_mib": 1598.6,
+          "camera_decode_fps": 45.067,
+          "processed_fps": 0.0,
+          "inference_ms": null,
+          "stall_seconds": 0.0,
+          "cpu_package_w": 44.361,
+          "gpu_board_w": 5.665,
+          "combined_power_w": 50.026,
+          "joules_per_result": null
+        },
+        {
+          "sequence": 2,
+          "mode": "CPU",
+          "samples": 59,
+          "duration_s": 119.91,
+          "container_cpu_percent": 87.302,
+          "container_cpu_cores": 1.746,
+          "memory_mib": 1935.7,
+          "camera_decode_fps": 34.099,
+          "processed_fps": 2.327,
+          "inference_ms": 335.05,
+          "stall_seconds": 14.19,
+          "cpu_package_w": 46.636,
+          "gpu_board_w": 5.298,
+          "combined_power_w": 51.934,
+          "joules_per_result": 22.318
+        },
+        {
+          "sequence": 3,
+          "mode": "CUDA",
+          "samples": 59,
+          "duration_s": 119.18,
+          "container_cpu_percent": 87.451,
+          "container_cpu_cores": 1.749,
+          "memory_mib": 1998.1,
+          "camera_decode_fps": 47.551,
+          "processed_fps": 5.974,
+          "inference_ms": 23.724,
+          "stall_seconds": 0.0,
+          "cpu_package_w": 42.929,
+          "gpu_board_w": 20.359,
+          "combined_power_w": 63.287,
+          "joules_per_result": 10.594
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "aligned-benchmark",
+      "label": "Aligned pigeon-tracker inference and Proxmox host-power benchmark",
+      "query": {
+        "engine": "SQLite",
+        "language": "SQL",
+        "sql": "WITH phase_summary(sequence, mode, samples, duration_s, container_cpu_percent, container_cpu_cores, memory_mib, camera_decode_fps, processed_fps, inference_ms, stall_seconds, cpu_package_w, gpu_board_w, combined_power_w, joules_per_result) AS (VALUES (1, 'Detector off', 59, 118.63, 71.161, 1.423, 1598.6, 45.067, 0.0, NULL, 0.0, 44.361, 5.665, 50.026, NULL), (2, 'CPU', 59, 119.91, 87.302, 1.746, 1935.7, 34.099, 2.327, 335.05, 14.19, 46.636, 5.298, 51.934, 22.318), (3, 'CUDA', 59, 119.18, 87.451, 1.749, 1998.1, 47.551, 5.974, 23.724, 0.0, 42.929, 20.359, 63.287, 10.594)) SELECT * FROM phase_summary ORDER BY sequence;",
+        "description": "Materializes the reviewed phase aggregates calculated by grouping the inference benchmark by detector mode, then selecting Proxmox samples whose UTC timestamps fell between the first and last measured sample of each phase and averaging the power fields.",
+        "executed_at": "2026-08-23T00:00:00+02:00",
+        "tables_used": [
+          "pigeon-inference-benchmark-v2.csv",
+          "pigeon-host-power-v2.csv"
+        ],
+        "filters": [
+          "Measured detector phases only: off, cpu, auto (CUDA)",
+          "Warm-up and inter-phase reload intervals excluded",
+          "Host samples aligned by UTC timestamp to each measured phase"
+        ],
+        "metric_definitions": [
+          "Container CPU percent is usage relative to the LXC's two allocated cores; 100% equals two cores.",
+          "Host combined power is Intel RAPL CPU-package power plus Quadro P2000 board power.",
+          "Processed FPS is the change in completed vision-pipeline results divided by measured phase duration.",
+          "Energy per processed result is mean host combined watts divided by processed results per second."
+        ]
+      }
+    }
+  ]
+}

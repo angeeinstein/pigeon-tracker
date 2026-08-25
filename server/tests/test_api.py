@@ -482,6 +482,23 @@ class TestDetectionCaptures:
         assert accepted.status_code == 200
         assert accepted.json()["review_status"] == "training"
 
+        restored = client.post(
+            f"/api/detection-captures/{capture['id']}/review/restore",
+            json={
+                "review_status": "unreviewed",
+                "review_label": "",
+                "annotations": [{"review_status": "unreviewed", "review_label": ""}],
+            },
+        )
+        assert restored.status_code == 200
+        assert restored.json()["review_status"] == "unreviewed"
+
+        accepted = client.patch(
+            f"/api/detection-captures/{capture['id']}/annotations/0",
+            json={"review_status": "accepted", "review_label": "bird"},
+        )
+        assert accepted.status_code == 200
+
         exported = client.get("/api/detection-captures/export/yolo.zip")
         assert exported.status_code == 200
         assert exported.headers["content-type"] == "application/zip"
