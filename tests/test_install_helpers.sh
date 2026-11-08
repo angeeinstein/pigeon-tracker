@@ -56,6 +56,16 @@ elif [[ $? -ne 2 ]]; then
     fail "an unknown capability did not produce the diagnostic status"
 fi
 
+policy() { printf '%s\n' "nodejs:" "  Installed: $1" "  Candidate: $2" "  Version table:"; }
+[[ "$(policy '(none)' '18.19.1+dfsg-6ubuntu5' | apt_candidate_major)" == 18 ]] ||
+    fail "Ubuntu nodejs candidate was not parsed"
+[[ "$(policy '(none)' '1:24.11.0-1nodesource1' | apt_candidate_major)" == 24 ]] ||
+    fail "nodejs candidate with an epoch was not parsed"
+[[ "$(policy '(none)' '(none)' | apt_candidate_major)" == 0 ]] ||
+    fail "a missing nodejs candidate was not reported as 0"
+[[ "$(printf '' | apt_candidate_major)" == 0 ]] ||
+    fail "empty apt-cache output was not reported as 0"
+
 test_root="$(mktemp -d "${repo_root}/.installer-test.XXXXXX")"
 trap 'rm -rf -- "${test_root}"' EXIT
 VENV_DIR="${test_root}/venv"
