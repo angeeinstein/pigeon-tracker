@@ -67,8 +67,10 @@ UPDATE_AVAILABLE=-1
 CURRENT_COMMIT="unknown"
 REMOTE_COMMIT="unknown"
 
-MIN_NODE_MAJOR=18
-NODESOURCE_VERSION=20
+# Node.js is only used to build the web interface. Node 18 and 20 are end of
+# life (no security fixes); 22 and 24 are the maintained LTS lines.
+MIN_NODE_MAJOR=22
+NODESOURCE_VERSION=24
 PYTORCH_CPU_INDEX_URL="https://download.pytorch.org/whl/cpu"
 # PyTorch's CUDA 13 builds no longer contain kernels for Maxwell, Pascal or
 # Volta. CUDA 12.6 is the maintained legacy wheel line for those devices.
@@ -210,6 +212,12 @@ node_major() {
     node --version 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/'
 }
 
+# Major version of the nodejs package apt would install (0 if none), read from
+# `apt-cache policy nodejs` on stdin. Handles epochs ("1:22.1.0-1").
+apt_candidate_major() {
+    sed -n 's/^ *Candidate: *\([0-9]*:\)\{0,1\}\([0-9][0-9]*\).*/\2/p' | head -n1 | grep . || echo 0
+}
+
 install_node() {
     local major
     major="$(node_major)"
@@ -219,13 +227,23 @@ install_node() {
     fi
 
     info "installing Node.js (found major version '${major:-none}', need >= ${MIN_NODE_MAJOR})"
-    if apt-get install -y -qq --no-install-recommends nodejs npm >/dev/null 2>&1 &&
+    # only take the distribution package if it is new enough; otherwise it would
+    # pull in an unsupported Node.js plus npm and its dependencies for nothing
+    if [[ "$(apt-cache policy nodejs 2>/dev/null | apt_candidate_major)" -ge ${MIN_NODE_MAJOR} ]] &&
+       apt-get install -y -qq --no-install-recommends nodejs npm >/dev/null 2>&1 &&
        [[ "$(node_major)" -ge ${MIN_NODE_MAJOR} ]]; then
         ok "Node.js $(node --version) installed from the distribution"
         return
     fi
 
     info "distribution Node.js is too old; using NodeSource ${NODESOURCE_VERSION}.x"
+    # NodeSource's nodejs ships its own npm and conflicts with the distribution's
+    # npm package; remove an older distribution install first
+    if dpkg-query -W -f='${Status}\n' nodejs npm 2>/dev/null | grep -q 'ok installed' &&
+       ! dpkg-query -W -f='${Version}\n' nodejs 2>/dev/null | grep -q nodesource; then
+        info "removing the distribution Node.js $(node --version 2>/dev/null || echo '') and npm"
+        apt-get purge -y -qq nodejs npm >/dev/null 2>&1 || true
+    fi
     curl -fsSL "https://deb.nodesource.com/setup_${NODESOURCE_VERSION}.x" -o /tmp/nodesource.sh
     bash /tmp/nodesource.sh >/dev/null
     rm -f /tmp/nodesource.sh
